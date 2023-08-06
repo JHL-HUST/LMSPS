@@ -1,105 +1,9 @@
 import math
-import numpy as np
+import random
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch_sparse import SparseTensor
-from dy import Dy, DyReLUA, DyReLUB
-
-
-class Transformer(nn.Module):
-    "Self attention layer for `n_channels`."
-    def __init__(self, n_channels, num_heads=1, att_drop=0., act='none'):
-        super(Transformer, self).__init__()
-        self.n_channels = n_channels
-        self.num_heads = num_heads
-
-        if self.n_channels > 4:
-            assert self.n_channels % (self.num_heads * 4) == 0
-            self.query = nn.Linear(self.n_channels, self.n_channels//4)
-            self.key   = nn.Linear(self.n_channels, self.n_channels//4)
-        else:
-            self.query = nn.Linear(self.n_channels, self.n_channels)
-            self.key   = nn.Linear(self.n_channels, self.n_channels)
-
-        self.value = nn.Linear(self.n_channels, self.n_channels)
-
-        self.gamma = nn.Parameter(torch.tensor([0.]))
-        self.att_drop = nn.Dropout(att_drop)
-        if act == 'sigmoid':
-            self.act = torch.nn.Sigmoid()
-        elif act == 'relu':
-            self.act = torch.nn.ReLU()
-        elif act == 'leaky_relu':
-            self.act = torch.nn.LeakyReLU(0.2)
-        elif act == 'none':
-            self.act = lambda x: x
-        elif act == 'dy_relu1':
-            self.act = DyReLUA(self.num_heads)
-        elif act == 'dy_relu2':
-            self.act = DyReLUB(self.num_heads)
-        else:
-            assert 0, f'Unrecognized activation function {act} for class Transformer'
-
-
-    def reset_parameters(self):
-
-        def xavier_uniform_(tensor, gain=1.):
-            fan_in, fan_out = tensor.size()[-2:]
-            std = gain * math.sqrt(2.0 / float(fan_in + fan_out))
-            a = math.sqrt(3.0) * std  # Calculate uniform bounds from standard deviation
-            return torch.nn.init._no_grad_uniform_(tensor, -a, a)
-
-        gain = nn.init.calculate_gain("relu")
-        xavier_uniform_(self.query.weight, gain=gain)
-        xavier_uniform_(self.key.weight, gain=gain)
-        xavier_uniform_(self.value.weight, gain=gain)
-        nn.init.zeros_(self.query.bias)
-        nn.init.zeros_(self.key.bias)
-        nn.init.zeros_(self.value.bias)
-
-    def forward(self, x, mask=None):
-        B, M, C = x.size() # batchsize, num_metapaths, channels
-        H = self.num_heads
-        if mask is not None:
-            assert mask.size() == torch.Size((B, M))
-
-        f = self.query(x).view(B, M, H, -1).permute(0,2,1,3) # [B, H, M, -1]
-        g = self.key(x).view(B, M, H, -1).permute(0,2,3,1)   # [B, H, -1, M]
-        h = self.value(x).view(B, M, H, -1).permute(0,2,1,3) # [B, H, M, -1]
-
-
-
-        beta = F.softmax(self.act(f @ g / math.sqrt(f.size(-1))), dim=-1) # [B, H, M, M(normalized)]
-        beta = self.att_drop(beta)  # p=0
-        if mask is not None:
-            beta = beta * mask.view(B, 1, 1, M)
-            beta = beta / (beta.sum(-1, keepdim=True) + 1e-12)
-
-        o = self.gamma * (beta @ h) # [B, H, M, -1]
-        return o.permute(0,2,1,3).reshape((B, M, C)) + x
-
-
-
-
-class SemanticAttention(nn.Module):
-    def __init__(self, in_size, hidden_size=128, independent_attn=False):
-        super(SemanticAttention, self).__init__()
-        self.independent_attn = independent_attn
-
-        self.project = nn.Sequential(
-            nn.Linear(in_size, hidden_size),
-            nn.Tanh(),
-            nn.Linear(hidden_size, 1, bias=False)
-        )
-
-    def forward(self, z): # z: (N, M, D)
-        w = self.project(z) # (N, M, 1)
-        if not self.independent_attn:
-            w = w.mean(0, keepdim=True)  # (1, M, 1)
-        beta = torch.softmax(w, dim=1)  # (N, M, 1) or (1, M, 1)
-
-        return (beta * z).sum(1)  # (N, M, D)
 
 
 class Conv1d1x1(nn.Module):
@@ -143,6 +47,8 @@ class Conv1d1x1(nn.Module):
                 assert False
         else:
             if self.cformat == 'channel-first':
+
+                # print(x.shape, self.W.shape)
                 return torch.einsum('bcm,cmn->bcn', x, self.W) + self.bias
             elif self.cformat == 'channel-last':
                 return torch.einsum('bmc,cmn->bnc', x, self.W) + self.bias.T
@@ -150,35 +56,37 @@ class Conv1d1x1(nn.Module):
                 assert False
 
 
-class SeHGNN(nn.Module):
+class LDMLP(nn.Module):
     def __init__(self, nfeat, hidden, nclass, feat_keys, label_feat_keys, tgt_type,
-                 dropout, input_drop, att_dropout, label_drop,
-                 n_layers_1, n_layers_2, act,
-                 residual=False, bns=False, data_size=None, drop_metapath=0., num_heads=1,
-                 remove_transformer=True, independent_attn=False):
-        super(SeHGNN, self).__init__()
+                 dropout, input_drop, att_dropout, label_drop, n_layers_2, residual=False, 
+                 bns=False, data_size=None, path=[], label_path=[], eps=0, device=None):
+        super(LDMLP, self).__init__()
 
         self.feat_keys = sorted(feat_keys)
         self.label_feat_keys = sorted(label_feat_keys)
-        self.num_channels = num_channels = len(self.feat_keys) + len(self.label_feat_keys)
-        print("number of paths", len(self.feat_keys), len(self.label_feat_keys))
+        self.num_channels = num_channels = len(path) + len(label_path)
         self.tgt_type = tgt_type
         self.residual = residual
-        self.remove_transformer = remove_transformer
 
-        self.data_size = data_size  #{'A': 334, 'AP': 4231, 'APA': 334, 'APT': 50, 'APV': 20}
+        self.data_size = data_size 
+        self.path = path
+        self.label_path = label_path
         self.embeding = nn.ParameterDict({})
-        for k, v in data_size.items():
-            self.embeding[str(k)] = nn.Parameter(
-                torch.Tensor(v, nfeat).uniform_(-0.5, 0.5))
 
+        for k, v in data_size.items():
+            if k in path or k==tgt_type:
+                self.embeding[str(k)] = nn.Parameter(
+                torch.Tensor(v, nfeat).uniform_(-0.5, 0.5))
+                    
         if len(self.label_feat_keys):
             self.labels_embeding = nn.ParameterDict({})
             for k in self.label_feat_keys:
-                self.labels_embeding[k] = nn.Parameter(
-                    torch.Tensor(nclass, nfeat).uniform_(-0.5, 0.5))
+                if k in label_path:
+                    self.labels_embeding[k] = nn.Parameter(
+                        torch.Tensor(nclass, nfeat).uniform_(-0.5, 0.5))
         else:
             self.labels_embeding = {}
+        
 
         self.layers = nn.Sequential(
             Conv1d1x1(nfeat, hidden, num_channels, bias=True, cformat='channel-first'),
@@ -191,312 +99,6 @@ class SeHGNN(nn.Module):
             nn.Dropout(dropout),
         )
 
-        if self.remove_transformer:
-            self.layer_mid = SemanticAttention(hidden, hidden, independent_attn=independent_attn)
-            self.layer_final = nn.Linear(hidden, hidden)
-        else:
-            self.layer_mid = Transformer(hidden, num_heads=num_heads)
-            # self.layer_mid = Transformer(hidden, drop_metapath=drop_metapath)
-            self.layer_final = nn.Linear(num_channels * hidden, hidden)
-
-        if self.residual:
-            self.res_fc = nn.Linear(nfeat, hidden, bias=False)
-
-        def add_nonlinear_layers(nfeats, dropout, bns=False):
-            return [
-                nn.BatchNorm1d(hidden, affine=bns, track_running_stats=bns),
-                nn.PReLU(),
-                nn.Dropout(dropout)
-            ]
-
-        lr_output_layers = [
-            [nn.Linear(hidden, hidden, bias=not bns)] + add_nonlinear_layers(hidden, dropout, bns)
-            # [Dense(hidden, hidden, bns)] + add_nonlinear_layers(hidden, dropout, bns)
-            for _ in range(n_layers_2-1)]
-        self.lr_output = nn.Sequential(*(
-            [ele for li in lr_output_layers for ele in li] + [
-            nn.Linear(hidden, nclass, bias=False),
-            nn.BatchNorm1d(nclass, affine=bns, track_running_stats=bns)]))
-        # self.lr_output = FeedForwardNetII(
-        #     hidden, hidden, nclass, n_layers_2, dropout, 0.5, bns)
-
-        self.prelu = nn.PReLU()
-        self.dropout = nn.Dropout(dropout)
-        self.input_drop = nn.Dropout(input_drop)  # input_drop=0.1
-        self.att_drop = nn.Dropout(att_dropout)
-        self.label_drop = nn.Dropout(label_drop)
-
-        self.reset_parameters()
-
-    def reset_parameters(self):
-        # for k, v in self.embeding:
-        #     v.data.uniform_(-0.5, 0.5)
-        # for k, v in self.labels_embeding:
-        #     v.data.uniform_(-0.5, 0.5)
-
-        for layer in self.layers:
-            if isinstance(layer, Conv1d1x1):
-                layer.reset_parameters()
-
-        gain = nn.init.calculate_gain("relu")
-        nn.init.xavier_uniform_(self.layer_final.weight, gain=gain)
-        nn.init.zeros_(self.layer_final.bias)
-        if self.residual:
-            nn.init.xavier_uniform_(self.res_fc.weight, gain=gain)
-        for layer in self.lr_output:
-            if isinstance(layer, nn.Linear):
-                nn.init.xavier_uniform_(layer.weight, gain=gain)
-                if layer.bias is not None:
-                    nn.init.zeros_(layer.bias)
-
-    def forward(self, batch, feature_dict, label_dict={}, mask=None):
-        if isinstance(feature_dict[self.tgt_type], torch.Tensor):
-            mapped_feats = {k: self.input_drop(x @ self.embeding[k]) for k, x in feature_dict.items()}  # @矩阵-向量乘法
-        elif isinstance(feature_dict[self.tgt_type], SparseTensor):
-            mapped_feats = {k: self.input_drop(x @ self.embeding[k[-1]]) for k, x in feature_dict.items()}
-        else:
-            assert 0
-
-        mapped_label_feats = {k: self.input_drop(x @ self.labels_embeding[k]) for k, x in label_dict.items()}
-
-        features = [mapped_feats[k] for k in self.feat_keys] + [mapped_label_feats[k] for k in self.label_feat_keys]
-
-        B = num_node = mapped_feats[self.tgt_type].shape[0] # B: 974
-        C = self.num_channels                               # C: 9
-        D = mapped_feats[self.tgt_type].shape[1]            # D: 512
-
-
-        features = torch.stack(features, dim=1) # [B, C, D]
-
-        features = self.layers(features)
-        if self.remove_transformer:
-            features = self.layer_mid(features)
-        else:
-            # import code
-            # code.interact(local=locals())
-            features = self.layer_mid(features, mask=None).transpose(1,2)
-
-        out = self.layer_final(features.reshape(B, -1))
-
-
-
-        if self.residual:
-            out = out + self.res_fc(mapped_feats[self.tgt_type])
-        out = self.dropout(self.prelu(out))
-        out = self.lr_output(out)
-        return out
-
-
-
-
-class SeHGNN_DY(nn.Module):
-    def __init__(self, nfeat, hidden, nclass, feat_keys, label_feat_keys, tgt_type,
-                 dropout, input_drop, att_dropout, label_drop,
-                 n_layers_1, n_layers_2, act,
-                 residual=False, bns=False, data_size=None, drop_metapath=0., num_heads=1, no_path=[], no_label=[],
-                 remove_transformer=True, independent_attn=False):
-        super(SeHGNN_DY, self).__init__()
-
-        self.feat_keys = sorted(feat_keys)
-        self.label_feat_keys = sorted(label_feat_keys)
-        self.num_channels = num_channels = len(self.feat_keys) - len(no_path) + len(self.label_feat_keys) - len(no_label)
-        self.tgt_type = tgt_type
-        self.residual = residual
-        self.remove_transformer = remove_transformer
-
-        self.data_size = data_size  #{'A': 334, 'AP': 4231, 'APA': 334, 'APT': 50, 'APV': 20}
-        self.no_path = no_path
-        self.no_label = no_label
-        self.embeding = nn.ParameterDict({})
-
-        for k, v in data_size.items():
-            self.embeding[str(k)] = nn.Parameter(
-                torch.Tensor(v, nfeat).uniform_(-0.5, 0.5))
-
-        if len(self.label_feat_keys):
-            self.labels_embeding = nn.ParameterDict({})
-            for k in self.label_feat_keys:
-                self.labels_embeding[k] = nn.Parameter(
-                    torch.Tensor(nclass, nfeat).uniform_(-0.5, 0.5))
-        else:
-            self.labels_embeding = {}
-
-        self.layers = nn.Sequential(
-            Conv1d1x1(nfeat, hidden, num_channels, bias=True, cformat='channel-first'),
-            nn.LayerNorm([num_channels, hidden]), # nfeat, hidden, num_channels : 512, 512, 9
-            nn.PReLU(),
-            nn.Dropout(dropout),
-            Conv1d1x1(hidden, hidden, num_channels, bias=True, cformat='channel-first'),
-            nn.LayerNorm([num_channels, hidden]),
-            nn.PReLU(),
-            nn.Dropout(dropout),
-        )
-
-
-        if self.remove_transformer:
-            self.layer_mid = SemanticAttention(hidden, hidden, independent_attn=independent_attn)
-            self.layer_final = nn.Linear(hidden, hidden)
-        else:
-            self.layer_mid = Transformer(hidden, num_heads=num_heads)
-            self.layer_final = nn.Linear(num_channels * hidden, hidden)
-
-        if self.residual:
-            self.res_fc = nn.Linear(nfeat, hidden, bias=False)
-
-        def add_nonlinear_layers(nfeats, dropout, bns=False):
-            return [
-                nn.BatchNorm1d(hidden, affine=bns, track_running_stats=bns),
-                nn.PReLU(),
-                nn.Dropout(dropout)
-            ]
-
-        lr_output_layers = [
-            [nn.Linear(hidden, hidden, bias=not bns)] + add_nonlinear_layers(hidden, dropout, bns)
-            for _ in range(n_layers_2-1)]
-        self.lr_output = nn.Sequential(*(
-            [ele for li in lr_output_layers for ele in li] + [
-            nn.Linear(hidden, nclass, bias=False),
-            nn.BatchNorm1d(nclass, affine=bns, track_running_stats=bns)]))
-
-        self.prelu = nn.PReLU()
-        self.dropout = nn.Dropout(dropout)
-        self.input_drop = nn.Dropout(input_drop)  # input_drop=0.1
-        self.att_drop = nn.Dropout(att_dropout)
-        self.label_drop = nn.Dropout(label_drop)
-        self.dyalpha = Dy(nfeat)
-        self.reset_parameters()
-        # import code
-        # code.interact(local=locals())
-
-
-    def reset_parameters(self):
-        for layer in self.layers:
-            if isinstance(layer, Conv1d1x1):
-                layer.reset_parameters()
-
-        gain = nn.init.calculate_gain("relu")
-        nn.init.xavier_uniform_(self.layer_final.weight, gain=gain)
-        nn.init.zeros_(self.layer_final.bias)
-        if self.residual:
-            nn.init.xavier_uniform_(self.res_fc.weight, gain=gain)
-        for layer in self.lr_output:
-            if isinstance(layer, nn.Linear):
-                nn.init.xavier_uniform_(layer.weight, gain=gain)
-                if layer.bias is not None:
-                    nn.init.zeros_(layer.bias)
-
-    def forward(self, batch, feature_dict, label_dict={}, mask=None):
-        if isinstance(feature_dict[self.tgt_type], torch.Tensor):
-            mapped_feats = {k: self.input_drop(x @ self.embeding[k]) for k, x in feature_dict.items()}  # @矩阵-向量乘法
-            # DBLP: {'A': 334, 'AP': 4231, 'APA': 334, 'APT': 50, 'APV': 20}
-            # IMDB(25): ['M', 'MA', 'MD', 'MK', 'MAM', 'MDM', 'MKM', 'MAMA', 'MAMD', 'MAMK', 'MDMA', 'MDMD', 'MDMK', 'MKMA', 'MKMD', 'MKMK', 'MAMAM', 'MAMDM', 'MAMKM', 'MDMAM', 'MDMDM', 'MDMKM', 'MKMAM', 'MKMDM', 'MKMKM']
-            # ACM(41): ['P', 'PA', 'PC', 'PP', 'PAP', 'PCP', 'PPA', 'PPC', 'PPP', 'PAPA', 'PAPC', 'PAPP', 'PCPA', 'PCPC', 'PCPP', 'PPAP', 'PPCP', 'PPPA', 'PPPC', 'PPPP', 'PAPAP', 'PAPCP', 'PAPPA', 'PAPPC', 'PAPPP', 'PCPAP', 'PCPCP', 'PCPPA', 'PCPPC', ,'PCPPP', 'PPAPA', 'PPAPC', 'PPAPP', 'PPCPA', 'PPCPC', 'PPPCPP', 'PPPAP', 'PPPCP', 'PPPPA', 'PPPPC', 'PPPPP']
-            # Freebase(73): ['02', '022', '072', '042', '062', '002', '052', '032', '012', '05', '025', '055', '045', '075', '005', '065', '035', '015', '00', '020', '040', '070', '000', '010', '060', '050', '030', '01', '011', '001', '061', '051', '021', '041', '071', '031', '04', '044', '034', '024', '004', '054', '074', '014', '064', '07', '077', '047',
-            # '067', '027', '057', '007', '037', '017', '06', '006', '046', '066', '026', '01 6', '076', '056', '036', '03', '023', '043', '073', '003', '063', '033', '013', '0 53', '0']
-        elif isinstance(feature_dict[self.tgt_type], SparseTensor):
-            mapped_feats = {k: self.input_drop(x @ self.embeding[k[-1]]) for k, x in feature_dict.items()}
-
-        else:
-            assert 0
-
-        mapped_label_feats = {k: self.input_drop(x @ self.labels_embeding[k]) for k, x in label_dict.items()}
-        # ['APA', 'APAPA', 'APTPA', 'APVPA']
-        # IMDB(12): ['MDM', 'MAM', 'MKM', 'MDMDM', 'MAMDM', 'MKMDM', 'MDMAM', 'MAMAM', 'MKMAM', 'MDMKM', 'MAMKM', 'MKMKM']
-        # ACM(9): ['PP', 'PPP', 'PAP', 'PCP', 'PPPP', 'PAPP', 'PCPP', 'PPAP', 'PPCP']
-        # Freebase(9): ['00', '000', '0040', '0070', '0000', '0010', '0060', '0050', '0030']
-
-        #dyalpha = self.dyalpha(mapped_feats)
-
-        features = [mapped_feats[k] for k in self.feat_keys if k not in self.no_path] + \
-                   [mapped_label_feats[k] for k in self.label_feat_keys if k not in self.no_label]
-        # [974,512]  self.dyalpha(mapped_label_feats[k])
-
-        B = num_node = features[0].shape[0] #mapped_feats[self.tgt_type].shape[0] # B: 974
-        C = self.num_channels                               # C: 9
-        D = features[0].shape[1]    #mapped_feats[self.tgt_type].shape[1]            # D: 512
-
-        features = torch.stack(features, dim=1) # [B, C, D]
-
-        import code
-        code.interact(local=locals())
-
-
-        features = self.layers(features)
-        if self.remove_transformer:
-            features = self.layer_mid(features)
-        else:
-            features = self.layer_mid(features, mask=None).transpose(1,2)
-        out = self.layer_final(features.reshape(B, -1))
-
-        # import code
-        # code.interact(local=locals())
-
-        if self.residual:
-            out = out + self.res_fc(mapped_feats[self.tgt_type])
-        out = self.dropout(self.prelu(out))
-        out = self.lr_output(out)
-        return out
-
-
-
-
-
-
-
-
-
-
-
-from torch_geometric.nn import GATConv
-class SeHGNN_NA(nn.Module):
-    def __init__(self, nfeat, hidden, nclass, feat_keys, label_feat_keys, tgt_type,
-                 dropout, input_drop, att_dropout, label_drop,
-                 n_layers_1, n_layers_2, act,
-                 residual=False, bns=False, data_size=None, drop_metapath=0., num_heads=1):
-        super(SeHGNN_NA, self).__init__()
-        self.feat_keys = sorted(feat_keys)
-        self.label_feat_keys = sorted(label_feat_keys)
-        self.num_channels = num_channels = len(self.feat_keys) + 1 + len(self.label_feat_keys)
-        self.tgt_type = tgt_type
-        self.residual = residual
-
-        self.data_size = data_size
-        self.embeding = nn.ParameterDict({})
-        for k, v in data_size.items():
-            self.embeding[str(k)] = nn.Parameter(
-                torch.Tensor(v, nfeat).uniform_(-0.5, 0.5))
-
-        if len(self.label_feat_keys):
-            self.labels_embeding = nn.ParameterDict({})
-            for k in self.label_feat_keys:
-                self.labels_embeding[k] = nn.Parameter(
-                    torch.Tensor(nclass, nfeat).uniform_(-0.5, 0.5))
-        else:
-            self.labels_embeding = {}
-
-        self.layers = nn.Sequential(
-            Conv1d1x1(nfeat, hidden, num_channels, bias=True, cformat='channel-first'),
-            nn.LayerNorm([num_channels, hidden]),
-            nn.PReLU(),
-            nn.Dropout(dropout),
-            # Conv1d1x1(num_channels, num_channels, hidden, bias=True, cformat='channel-last'),
-            # nn.LayerNorm([num_channels, hidden]),
-            # nn.PReLU(),
-            Conv1d1x1(hidden, hidden, num_channels, bias=True, cformat='channel-first'),
-            nn.LayerNorm([num_channels, hidden]),
-            nn.PReLU(),
-            nn.Dropout(dropout),
-            # Conv1d1x1(num_channels, 4, 1, bias=True, cformat='channel-last'),
-            # nn.LayerNorm([4, hidden]),
-            # nn.PReLU(),
-        )
-
-        assert hidden % num_heads == 0, f'hidden {hidden} should be divisible by num_heads {num_heads}'
-        self.feat_gat_layers = nn.ModuleDict({
-            k: GATConv(hidden, hidden//num_heads, heads=num_heads, dropout=0.6) for k in self.feat_keys})
-
-        self.layer_mid = Transformer(hidden, num_heads=1)
-        # self.layer_mid = Transformer(hidden, drop_metapath=drop_metapath)
         self.layer_final = nn.Linear(num_channels * hidden, hidden)
 
         if self.residual:
@@ -511,301 +113,6 @@ class SeHGNN_NA(nn.Module):
 
         lr_output_layers = [
             [nn.Linear(hidden, hidden, bias=not bns)] + add_nonlinear_layers(hidden, dropout, bns)
-            # [Dense(hidden, hidden, bns)] + add_nonlinear_layers(hidden, dropout, bns)
-            for _ in range(n_layers_2-1)]
-        self.lr_output = nn.Sequential(*(
-            [ele for li in lr_output_layers for ele in li] + [
-            nn.Linear(hidden, nclass, bias=False),
-            nn.BatchNorm1d(nclass, affine=bns, track_running_stats=bns)]))
-        # self.lr_output = FeedForwardNetII(
-        #     hidden, hidden, nclass, n_layers_2, dropout, 0.5, bns)
-
-        self.prelu = nn.PReLU()
-        self.dropout = nn.Dropout(dropout)
-        self.input_drop = nn.Dropout(input_drop)
-        self.att_drop = nn.Dropout(att_dropout)
-        self.label_drop = nn.Dropout(label_drop)
-
-        self.reset_parameters()
-
-    def reset_parameters(self):
-        # for k, v in self.embeding:
-        #     v.data.uniform_(-0.5, 0.5)
-        # for k, v in self.labels_embeding:
-        #     v.data.uniform_(-0.5, 0.5)
-
-        for layer in self.layers:
-            if isinstance(layer, Conv1d1x1):
-                layer.reset_parameters()
-        for k, v in self.feat_gat_layers.items():
-            v.reset_parameters()
-
-        gain = nn.init.calculate_gain("relu")
-        nn.init.xavier_uniform_(self.layer_final.weight, gain=gain)
-        nn.init.zeros_(self.layer_final.bias)
-        if self.residual:
-            nn.init.xavier_uniform_(self.res_fc.weight, gain=gain)
-        for layer in self.lr_output:
-            if isinstance(layer, nn.Linear):
-                nn.init.xavier_uniform_(layer.weight, gain=gain)
-                if layer.bias is not None:
-                    nn.init.zeros_(layer.bias)
-
-    def forward(self, batch, feat_adjs, label_dict={}, mask=None):
-        mapped_feats = {str(k): self.input_drop(x @ self.embeding[str(k)]) for k, x in self.feats.items()}
-
-        aggregated_feats = {}
-        for k in self.feat_gat_layers.keys():
-            tgt, src = k[0], k[-1]
-            assert len(k) > 1 and tgt == self.tgt_type
-            aggregated_feats[k] = self.feat_gat_layers[k]((
-                mapped_feats[src], mapped_feats[self.tgt_type][batch]), feat_adjs[k])
-        aggregated_feats[self.tgt_type] = mapped_feats[self.tgt_type][batch]
-
-        mapped_label_feats = {k: self.input_drop(x @ self.labels_embeding[k]) for k, x in label_dict.items()}
-
-        features = [aggregated_feats[k] for k in self.feat_keys] + [aggregated_feats[self.tgt_type]] + [mapped_label_feats[k] for k in self.label_feat_keys]
-
-        # if mask is not None:
-        #     if self.keys_sort:
-        #         mask = [mask[k] for k in sorted_f_keys]
-        #     else:
-        #         mask = list(mask.values())
-        #     mask = torch.stack(mask, dim=1)
-
-        B = num_node = len(batch)
-        C = self.num_channels
-        D = aggregated_feats[self.tgt_type].shape[1]
-
-        features = torch.stack(features, dim=1) # [B, C, D]
-
-        features = self.layers(features)
-        features = self.layer_mid(features, mask=None).transpose(1,2)
-        out = self.layer_final(features.reshape(B, -1))
-
-        if self.residual:
-            out = out + self.res_fc(aggregated_feats[self.tgt_type])
-        out = self.dropout(self.prelu(out))
-        out = self.lr_output(out)
-        return out
-
-
-class SeHGNN_block(nn.Module):
-    def __init__(self, nfeat, hidden, feat_keys, label_feat_keys, tgt_type, dropout, num_fp_layers=2):
-        super(SeHGNN_block, self).__init__()
-        self.feat_keys = sorted(feat_keys)
-        self.label_feat_keys = sorted(label_feat_keys)
-        self.tgt_type = tgt_type
-        self.num_channels = num_channels = len(self.feat_keys) + len(self.label_feat_keys)
-
-        def add_fp_layers(cin, cout):
-            return [
-                Conv1d1x1(cin, cout, num_channels, bias=True, cformat='channel-first'),
-                nn.LayerNorm([num_channels, cout]),
-                nn.PReLU(),
-                nn.Dropout(dropout)
-            ]
-
-        layers = add_fp_layers(nfeat, hidden)
-        for i in range(1, num_fp_layers):
-            layers += add_fp_layers(hidden, hidden)
-        self.layers = nn.Sequential(*layers)
-
-        self.layer_mid = Transformer(hidden, num_heads=1)
-        # self.layer_mid = Transformer(hidden, drop_metapath=drop_metapath)
-        self.layer_final = nn.Linear(num_channels * hidden, hidden)
-
-    def reset_parameters(self):
-        gain = nn.init.calculate_gain("relu")
-        for layer in self.layers:
-            if isinstance(layer, Conv1d1x1):
-                layer.reset_parameters()
-        self.layer_mid.reset_parameters()
-        nn.init.xavier_uniform_(self.layer_final.weight, gain=gain)
-        nn.init.zeros_(self.layer_final.bias)
-
-    def forward(self, x, label_dict={}, mask=None):
-        x = torch.stack(
-            [x[k] for k in self.feat_keys] + [label_dict[k] for k in self.label_feat_keys], dim=1)
-        B, C, D = x.size()
-        assert C == self.num_channels
-
-        x = self.layers(x)
-        x = self.layer_mid(x, mask=mask).transpose(1,2)
-        return self.layer_final(x.reshape(B, -1))
-
-
-class SeHGNN_2L(nn.Module):
-    def __init__(self, nfeat, hidden, nclass, feat_keys1, feat_keys2, label_feat_keys, node_types,
-                 dropout, input_drop, att_dropout, label_drop,
-                 n_layers_1, n_layers_2, act,
-                 residual=False, bns=False, data_size=None, drop_metapath=0., num_heads=1):
-        super(SeHGNN_2L, self).__init__()
-        self.label_feat_keys = sorted(label_feat_keys)
-        self.node_types = node_types
-        self.tgt_type = self.node_types[0]
-        self.residual = residual
-
-        self.feat_keys1 = {}
-        for tgt in self.node_types:
-            self.feat_keys1[tgt] = [k for k in feat_keys1 if k[0] == tgt] + [tgt]
-
-        self.layer1_blocks = nn.ModuleDict({
-            tgt: SeHGNN_block(nfeat, hidden, self.feat_keys1[tgt], {}, tgt, dropout) for tgt in self.node_types})
-
-        self.feat_keys2 = sorted(feat_keys2) + [self.tgt_type]
-
-        self.layer2 = SeHGNN_block(hidden, hidden, self.feat_keys2, self.label_feat_keys, self.tgt_type, dropout)
-
-        self.data_size = data_size
-        self.embeding = nn.ParameterDict({})
-        for k, v in data_size.items():
-            self.embeding[str(k)] = nn.Parameter(
-                torch.Tensor(v, nfeat).uniform_(-0.5, 0.5))
-
-        if len(self.label_feat_keys):
-            self.labels_embeding = nn.ParameterDict({})
-            for k in self.label_feat_keys:
-                self.labels_embeding[k] = nn.Parameter(
-                    torch.Tensor(nclass, nfeat).uniform_(-0.5, 0.5))
-        else:
-            self.labels_embeding = {}
-
-        if self.residual:
-            self.res_fc = nn.Linear(nfeat, hidden, bias=False)
-
-        def add_nonlinear_layers(nfeats, dropout, bns=False):
-            return [
-                nn.BatchNorm1d(hidden, affine=bns, track_running_stats=bns),
-                nn.PReLU(),
-                nn.Dropout(dropout)
-            ]
-
-        lr_output_layers = [
-            [nn.Linear(hidden, hidden, bias=not bns)] + add_nonlinear_layers(hidden, dropout, bns)
-            # [Dense(hidden, hidden, bns)] + add_nonlinear_layers(hidden, dropout, bns)
-            for _ in range(n_layers_2-1)]
-        self.lr_output = nn.Sequential(*(
-            [ele for li in lr_output_layers for ele in li] + [
-            nn.Linear(hidden, nclass, bias=False),
-            nn.BatchNorm1d(nclass, affine=bns, track_running_stats=bns)]))
-        # self.lr_output = FeedForwardNetII(
-        #     hidden, hidden, nclass, n_layers_2, dropout, 0.5, bns)
-
-        self.prelu = nn.PReLU()
-        self.dropout = nn.Dropout(dropout)
-        self.input_drop = nn.Dropout(input_drop)
-        self.att_drop = nn.Dropout(att_dropout)
-        self.label_drop = nn.Dropout(label_drop)
-
-        self.reset_parameters()
-
-    def reset_parameters(self):
-        # for k, v in self.embeding:
-        #     v.data.uniform_(-0.5, 0.5)
-        # for k, v in self.labels_embeding:
-        #     v.data.uniform_(-0.5, 0.5)
-
-        for layer in self.layer1_blocks.values():
-            layer.reset_parameters()
-        self.layer2.reset_parameters()
-
-        gain = nn.init.calculate_gain("relu")
-        if self.residual:
-            nn.init.xavier_uniform_(self.res_fc.weight, gain=gain)
-        for layer in self.lr_output:
-            if isinstance(layer, nn.Linear):
-                nn.init.xavier_uniform_(layer.weight, gain=gain)
-                if layer.bias is not None:
-                    nn.init.zeros_(layer.bias)
-
-    def forward(self, layer1_feats, batch1, layer2_feats, batch2, label_dict={}):
-        mapped_raw_feats = {str(k): self.input_drop(x @ self.embeding[str(k)]) for k, x in self.feats.items()}
-
-        aggregated_feats = {k: v @ mapped_raw_feats[k[-1]] for k, v in layer1_feats.items()}
-        for k, batch in batch1.items():
-            aggregated_feats[k] = mapped_raw_feats[k][batch]
-
-        features = {}
-        for tgt in batch1.keys():
-            features[tgt] = self.layer1_blocks[tgt]({k: v for k, v in aggregated_feats.items() if k[0] == tgt}, {})
-
-        aggregated_feats = {k: v @ features[k[-1]] for k, v in layer2_feats.items()}
-        aggregated_feats[self.tgt_type] = mapped_raw_feats[self.tgt_type][batch2]
-
-        mapped_label_feats = {k: self.input_drop(x @ self.labels_embeding[k]) for k, x in label_dict.items()}
-
-        out = self.layer2(aggregated_feats, mapped_label_feats)
-
-        if self.residual:
-            out = out + self.res_fc(aggregated_feats[self.tgt_type])
-        out = self.dropout(self.prelu(out))
-        out = self.lr_output(out)
-        return out
-
-
-class SeHGNN_noPath(nn.Module):
-    def __init__(self, nfeat, hidden, nclass, feat_keys, label_feat_keys, tgt_type,
-                 dropout, input_drop, att_dropout, label_drop,
-                 n_layers_1, n_layers_2, act,
-                 residual=False, bns=False, data_size=None, drop_metapath=0., num_heads=1, no_path=[],
-                 remove_transformer=True, independent_attn=False):
-        super(SeHGNN_noPath, self).__init__()
-
-        self.feat_keys = sorted(feat_keys)
-        self.label_feat_keys = sorted(label_feat_keys)
-        self.num_channels = num_channels = len(self.feat_keys) - len(no_path) #+ len(self.label_feat_keys)
-        self.tgt_type = tgt_type
-        self.residual = residual
-        self.remove_transformer = remove_transformer
-
-        self.data_size = data_size  #{'A': 334, 'AP': 4231, 'APA': 334, 'APT': 50, 'APV': 20}
-        self.no_path = no_path
-        self.embeding = nn.ParameterDict({})
-
-        for k, v in data_size.items():
-            self.embeding[str(k)] = nn.Parameter(
-                torch.Tensor(v, nfeat).uniform_(-0.5, 0.5))
-
-        if len(self.label_feat_keys):
-            self.labels_embeding = nn.ParameterDict({})
-            for k in self.label_feat_keys:
-                self.labels_embeding[k] = nn.Parameter(
-                    torch.Tensor(nclass, nfeat).uniform_(-0.5, 0.5))
-        else:
-            self.labels_embeding = {}
-
-        self.layers = nn.Sequential(
-            Conv1d1x1(nfeat, hidden, num_channels, bias=True, cformat='channel-first'),
-            nn.LayerNorm([num_channels, hidden]), # nfeat, hidden, num_channels : 512, 512, 9
-            nn.PReLU(),
-            nn.Dropout(dropout),
-            Conv1d1x1(hidden, hidden, num_channels, bias=True, cformat='channel-first'),
-            nn.LayerNorm([num_channels, hidden]),
-            nn.PReLU(),
-            nn.Dropout(dropout),
-        )
-
-
-        if self.remove_transformer:
-            self.layer_mid = SemanticAttention(hidden, hidden, independent_attn=independent_attn)
-            self.layer_final = nn.Linear(hidden, hidden)
-        else:
-            self.layer_mid = Transformer(hidden, num_heads=num_heads, act=act)
-            self.layer_final = nn.Linear(num_channels * hidden, hidden)
-
-        if self.residual:
-            self.res_fc = nn.Linear(nfeat, hidden, bias=False)
-
-        def add_nonlinear_layers(nfeats, dropout, bns=False):
-            return [
-                nn.BatchNorm1d(hidden, affine=bns, track_running_stats=bns),
-                nn.PReLU(),
-                nn.Dropout(dropout)
-            ]
-
-        lr_output_layers = [
-            [nn.Linear(hidden, hidden, bias=not bns)] + add_nonlinear_layers(hidden, dropout, bns)
             for _ in range(n_layers_2-1)]
         self.lr_output = nn.Sequential(*(
             [ele for li in lr_output_layers for ele in li] + [
@@ -817,10 +124,9 @@ class SeHGNN_noPath(nn.Module):
         self.input_drop = nn.Dropout(input_drop)  # input_drop=0.1
         self.att_drop = nn.Dropout(att_dropout)
         self.label_drop = nn.Dropout(label_drop)
-        self.dyalpha = Dy(nfeat)
+        #self.dyalpha = Dy(nfeat)
         self.reset_parameters()
-        # import code
-        # code.interact(local=locals())
+        self.epsilon = torch.FloatTensor([eps]).to(device)  #1e-12
 
 
     def reset_parameters(self):
@@ -842,24 +148,19 @@ class SeHGNN_noPath(nn.Module):
     def forward(self, batch, feature_dict, label_dict={}, mask=None):
         if isinstance(feature_dict[self.tgt_type], torch.Tensor):
             mapped_feats = {k: self.input_drop(x @ self.embeding[k]) for k, x in feature_dict.items()}  # @矩阵-向量乘法
-            # DBLP: {'A': 334, 'AP': 4231, 'APA': 334, 'APT': 50, 'APV': 20}
-            # IMDB(25): ['M', 'MA', 'MD', 'MK', 'MAM', 'MDM', 'MKM', 'MAMA', 'MAMD', 'MAMK', 'MDMA', 'MDMD', 'MDMK', 'MKMA', 'MKMD', 'MKMK', 'MAMAM', 'MAMDM', 'MAMKM', 'MDMAM', 'MDMDM', 'MDMKM', 'MKMAM', 'MKMDM', 'MKMKM']
-            # ACM(41): ['P', 'PA', 'PC', 'PP', 'PAP', 'PCP', 'PPA', 'PPC', 'PPP', 'PAPA', 'PAPC', 'PAPP', 'PCPA', 'PCPC', 'PCPP', 'PPAP', 'PPCP', 'PPPA', 'PPPC', 'PPPP', 'PAPAP', 'PAPCP', 'PAPPA', 'PAPPC', 'PAPPP', 'PCPAP', 'PCPCP', 'PCPPA', 'PCPPC', ,'PCPPP', 'PPAPA', 'PPAPC', 'PPAPP', 'PPCPA', 'PPCPC', 'PPPCPP', 'PPPAP', 'PPPCP', 'PPPPA', 'PPPPC', 'PPPPP']
         elif isinstance(feature_dict[self.tgt_type], SparseTensor):
             mapped_feats = {k: self.input_drop(x @ self.embeding[k[-1]]) for k, x in feature_dict.items()}
-            # ['APA', 'APAPA', 'APTPA', 'APVPA']
-            # IMDB(12): ['MDM', 'MAM', 'MKM', 'MDMDM', 'MAMDM', 'MKMDM', 'MDMAM', 'MAMAM', 'MKMAM', 'MDMKM', 'MAMKM', 'MKMKM']
-            # ACM(9): ['PP', 'PPP', 'PAP', 'PCP', 'PPPP', 'PAPP', 'PCPP', 'PPAP', 'PPCP']
         else:
             assert 0
 
         mapped_label_feats = {k: self.input_drop(x @ self.labels_embeding[k]) for k, x in label_dict.items()}
 
+        if self.tgt_type in self.path:
+            features = [mapped_feats[k] for k in self.feat_keys] + [mapped_label_feats[k] for k in self.label_feat_keys]
+        else:
+            features = [mapped_feats[k] for k in self.feat_keys if k!=self.tgt_type] + [mapped_label_feats[k] for k in self.label_feat_keys]
 
-        #dyalpha = self.dyalpha(mapped_feats)
 
-        features = [mapped_feats[k] for k in self.feat_keys if k not in self.no_path] #+ [mapped_label_feats[k] for k in self.label_feat_keys]
-        # [974,512]  self.dyalpha(mapped_label_feats[k])
 
         B = num_node = features[0].shape[0] #mapped_feats[self.tgt_type].shape[0] # B: 974
         C = self.num_channels                               # C: 9
@@ -867,22 +168,155 @@ class SeHGNN_noPath(nn.Module):
 
         features = torch.stack(features, dim=1) # [B, C, D]
 
-        # import code
-        # code.interact(local=locals())
+        features = self.layers(features).transpose(1,2)
 
-
-        features = self.layers(features)
-        if self.remove_transformer:
-            features = self.layer_mid(features)
-        else:
-            features = self.layer_mid(features, mask=None).transpose(1,2)
         out = self.layer_final(features.reshape(B, -1))
-
-        # import code
-        # code.interact(local=locals())
 
         if self.residual:
             out = out + self.res_fc(mapped_feats[self.tgt_type])
+
+        # This is an equivalent replacement for tf.l2_normalize
+        if self.epsilon:
+
+            out = out / (torch.max(torch.norm(out, dim=1, keepdim=True), self.epsilon))
+
         out = self.dropout(self.prelu(out))
         out = self.lr_output(out)
+
         return out
+
+class LHMLP_Se(nn.Module):
+    def __init__(self, hidden, nclass, feat_keys, label_feat_keys, tgt_key, dropout, 
+                 input_drop, device, residual=False, bns=False, data_size=None, num_sampled=1):
+        
+        super(LHMLP_Se, self).__init__()
+
+        self.feat_keys = feat_keys
+        self.label_feat_keys = label_feat_keys
+        self.num_feats = len(feat_keys)
+        self.all_meta_path = list(self.feat_keys) + list(self.label_feat_keys)
+        self.num_sampled = num_sampled
+        self.num_channels = self.num_sampled
+        self.num_paths = len(self.all_meta_path)
+
+        self.tgt_key = tgt_key
+        self.residual = residual
+
+        print("number of paths", len(feat_keys), len(label_feat_keys))
+
+        self.embeding = nn.ParameterDict({})
+        for k, v in data_size.items():
+            self.embeding[str(k)] = nn.Parameter(
+                torch.Tensor(v, hidden).uniform_(-0.5, 0.5))
+
+        if len(label_feat_keys):
+            self.labels_embeding = nn.ParameterDict({})
+            for k in label_feat_keys:
+                self.labels_embeding[k] = nn.Parameter(
+                    torch.Tensor(nclass, hidden).uniform_(-0.5, 0.5))
+
+        self.lr_output = nn.Sequential(
+            nn.Linear(hidden, nclass, bias=False),
+            nn.BatchNorm1d(nclass, affine=bns, track_running_stats=bns)
+        )
+
+        self.prelu = nn.PReLU()
+        self.dropout = nn.Dropout(dropout)
+        self.input_drop = nn.Dropout(input_drop)
+
+        self.alpha = torch.ones(self.num_paths).to(device)
+        self.alpha.requires_grad_(True)
+
+        if self.residual:
+            self.res_fc = nn.Linear(hidden, hidden)
+
+        self.init_params()
+
+    def init_params(self):
+
+        gain = nn.init.calculate_gain("relu")
+        if self.residual:
+            nn.init.xavier_uniform_(self.res_fc.weight, gain=gain)
+        for layer in self.lr_output:
+            if isinstance(layer, nn.Linear):
+                nn.init.xavier_uniform_(layer.weight, gain=gain)
+                if layer.bias is not None:
+                    nn.init.zeros_(layer.bias)
+
+
+    def alphas(self):
+        alphas= [self.alpha]
+        return alphas
+
+
+    def epoch_sample(self):
+        sampled = random.sample(range(self.num_paths), self.num_sampled)
+        sampled = sorted(sampled)
+        print(f"sampled: {sampled}")
+        return sampled
+    
+
+    def forward(self, epoch_sampled, feats_dict, label_feats_dict, meta_path_sampled, label_meta_path_sampled):
+
+        for k, v in feats_dict.items():
+            if k in self.embeding:
+                feats_dict[k] = self.input_drop(v @ self.embeding[k])
+        
+        for k, v in label_feats_dict.items():
+            if k in self.labels_embeding:
+                label_feats_dict[k] = self.input_drop(v @ self.labels_embeding[k])
+
+
+            
+        x = [feats_dict[k] for k in meta_path_sampled] + [label_feats_dict[k] for k in label_meta_path_sampled]
+        x = torch.stack(x, dim=1) # [B, C, D]
+
+        ws = [self.alpha[idx] for idx in epoch_sampled]
+        ws = F.softmax(torch.stack(ws), dim=-1)
+
+        x = torch.einsum('bcd,c->bd', x, ws)
+
+        if self.residual:
+            k = self.tgt_key
+
+            tgt_feat = feats_dict[k]
+            x = x + self.res_fc(tgt_feat)
+
+        x = self.dropout(self.prelu(x))
+        x = self.lr_output(x)
+        
+        return x
+
+    def sample(self, keys, label_keys, lam, topn, all_path=False):
+        '''
+        to sample one candidate edge type per link
+        '''
+        length = len(self.alpha)
+        seq_softmax = None if self.alpha is None else F.softmax(self.alpha, dim=-1)
+        max = torch.max(seq_softmax, dim=0).values
+        min = torch.min(seq_softmax, dim=0).values
+        threshold = lam * max + (1 - lam) * min
+
+
+        _, idxl = torch.sort(seq_softmax, descending=True)
+
+        idx = idxl[:self.num_sampled]
+
+        if all_path:
+            path = []
+            label_path = []
+            for i, index in enumerate(idxl):
+                if index < len(keys):
+                    path.append((keys[index], i))
+                else:
+                    label_path.append((label_keys[index - len(keys)], i))
+            return [path, label_path], idx
+
+        if topn:
+            id_paths = idxl[:topn]
+        else:
+            id_paths = [k for k in range(length) if seq_softmax[k].item() >= threshold]
+        path = [keys[i] for i in range(len(keys)) if i in id_paths]
+        label_path = [label_keys[i] for i in range(len(label_keys)) if i+len(keys) in id_paths]
+
+        return [path, label_path], idx

@@ -1,4 +1,3 @@
-import os
 import sys
 import gc
 import random
@@ -10,20 +9,15 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch_sparse import SparseTensor
-from torch_sparse import remove_diag, set_diag
 
 import numpy as np
-import scipy.sparse as sp
 from sklearn.metrics import f1_score
-from tqdm import tqdm
+from data_loader import data_loader
 
 sys.path.append('../data')
-from data_loader import data_loader
-from attacks import *
 
 import warnings
 warnings.filterwarnings("ignore", message="Setting attributes on ParameterList is not supported.")
-warnings.filterwarnings("ignore", message="Setting attributes on ParameterDict is not supported.")
 
 
 def set_random_seed(seed=0):
@@ -86,8 +80,7 @@ def hg_propagate_feat_dgl(g, tgt_type, num_hops, max_length, echo=False):
                 print(f'{ntype} {k} {v.shape}', v[:,-1].max(), v[:,-1].mean())
 
         if echo: print(f'------\n')
-    # import code
-    # code.interact(local=locals())
+
     return g
 
 
@@ -100,9 +93,6 @@ def hg_propagate_feat_dgl_path(g, tgt_type, num_hops, max_length, meta_path, ech
 
             for k in list(g.nodes[stype].data.keys()):
                 if len(k) == hop:
-                    # if hop == max_length - 1:
-                    #     import code
-                    #     code.interact(local=locals())
                     current_dst_name = f'{dtype}{k}'
                     if (hop == num_hops and dtype != tgt_type ) \
                       or (hop > num_hops):
@@ -133,8 +123,6 @@ def hg_propagate_feat_dgl_path(g, tgt_type, num_hops, max_length, meta_path, ech
                     print(f'{ntype} {k} {v.shape}', v[:,-1].max(), v[:,-1].mean())
 
         if echo: print(f'------\n')
-    # import code
-    # code.interact(local=locals())
     return g
 
 
@@ -227,10 +215,7 @@ def check_acc(preds_dict, condition, init_labels, train_nid, val_nid, test_nid, 
             mask_test.append(c)
         else:
             remove_label_keys.append(k)
-        # if show_test:
-        #     print(k, ra, rb, rc, la, lb, lc, (ra/rb-1)*100, (ra/rc-1)*100, (1-la/lb)*100, (1-la/lc)*100)
-        # else:
-        #     print(k, ra, rb, la, lb, (ra/rb-1)*100, (1-la/lb)*100)
+
     print(set(list(preds_dict.keys())) - set(remove_label_keys))
 
     print((torch.stack(mask_train, dim=0).sum(0) > 0).sum() / na)
@@ -272,9 +257,6 @@ def train_multi_stage(model, feats, label_feats, labels_cuda, loss_fcn, optimize
         extra_weight = extra_weight.to(device)
         extra_y = extra_y.to(device)
 
-        # teacher_soft = predict_prob[idx_2].to(device)
-        # teacher_conf = torch.max(teacher_soft, dim=1, keepdim=True)[0]
-
         optimizer.zero_grad()
         if scalar is not None:
             with torch.cuda.amp.autocast():
@@ -300,23 +282,6 @@ def train_multi_stage(model, feats, label_feats, labels_cuda, loss_fcn, optimize
             loss_train = L1_ratio * L1 + gama * L2_ratio * L2
             loss_train.backward()
             optimizer.step()
-
-        # if isinstance(loss_fcn, nn.BCELoss):
-        #     y_pred.append((output_att[:len(idx_1)].data.cpu() > 0).int())
-        #     output_att = torch.sigmoid(output_att)
-        #     assert 0, 'not implement yet'
-        # else:
-        #     y_pred.append(output_att[:len(idx_1)].argmax(dim=-1, keepdim=True).cpu())
-        #     L1 = loss_fcn(output_att[:len(idx_1)], batch_y)
-        #     L3 = teacher_soft * (torch.log(teacher_soft + 1e-8) - torch.log_softmax(output_att[len(idx_1):], dim=1))
-        #     L3 = (teacher_conf * L3).sum(dim=1).mean()
-        # y_true.append(batch_y.cpu())
-
-        # L1 = loss_fcn(output_att[:len(idx_1)],  y)*(len(idx_1)*1.0/(len(idx_1)+len(idx_2)))
-        # teacher_soft = predict_prob[idx_2].to(device)
-        # teacher_prob = torch.max(teacher_soft, dim=1, keepdim=True)[0]
-        # L3 = (teacher_prob*(teacher_soft*(torch.log(teacher_soft+1e-8)-torch.log_softmax(output_att[len(idx_1):], dim=1)))).sum(1).mean()*(len(idx_2)*1.0/(len(idx_1)+len(idx_2)))
-        # loss_train = L1_ratio * L1 + gama * L2_ratio * L3
 
         y_true.append(batch_y.cpu().to(torch.long))
         if isinstance(loss_fcn, nn.BCEWithLogitsLoss):
@@ -556,264 +521,8 @@ def train_search_new(model, feats, label_feats, labels_cuda, loss_fcn, optimizer
     return loss_train, loss_val, acc_train, acc_val
 
 
-
-
-
-def train_search_two(model, feats, label_feats, labels_cuda, loss_fcn, optimizer_w, optimizer_a, train_loader, val_loader, meta_sampled, label_sampled, evaluator, mask=None, scalar=None):
-    model.train()
-    device = labels_cuda.device
-    total_loss = 0
-    iter_num = 0
-    y_true, y_pred = [], []
-    val_total_loss = 0
-    val_y_true, val_y_pred = [], []
-    ###################  optimize w  ##################
-    for batch in train_loader:
-        batch = batch.to(device)
-        val_batch = next(iter(val_loader))
-        if isinstance(feats, list):
-            batch_feats = [x[batch].to(device) for x in feats]
-            val_batch_feats = [x[val_batch].to(device) for x in feats]
-        elif isinstance(feats, dict):
-            batch_feats = {k: x[batch].to(device) for k, x in feats.items()}
-            val_batch_feats = {k: x[val_batch].to(device) for k, x in feats.items()}
-        else:
-            assert 0
-        batch_labels_feats = {k: x[batch].to(device) for k, x in label_feats.items()}
-        val_batch_labels_feats = {k: x[val_batch].to(device) for k, x in label_feats.items()}
-        if mask is not None:
-            batch_mask = {k: x[batch].to(device) for k, x in mask.items()}
-            val_batch_mask = {k: x[val_batch].to(device) for k, x in mask.items()}
-        else:
-            batch_mask = None
-            val_batch_mask = None
-        batch_y = labels_cuda[batch]
-        val_batch_y = labels_cuda[val_batch]
-
-        ########################################train
-        optimizer_w.zero_grad()
-        if scalar is not None:
-            with torch.cuda.amp.autocast():
-                output_att = model(batch, batch_feats, meta_sampled, label_sampled, batch_labels_feats, batch_mask)
-                loss_train = loss_fcn(output_att, batch_y)
-            scalar.scale(loss_train).backward(retain_graph=True)
-            scalar.step(optimizer_w)
-            scalar.update()
-        else:
-            output_att = model(batch, batch_feats, meta_sampled, label_sampled, batch_labels_feats, batch_mask)
-            L1 = loss_fcn(output_att, batch_y)
-            loss_train = L1
-            loss_train.backward(retain_graph=True)
-            optimizer_w.step()
-
-        ########################################val  update a
-        optimizer_a.zero_grad()
-        # if scalar is not None:
-        #     with torch.cuda.amp.autocast():
-        #         val_output_att = model(val_batch, val_batch_feats, val_batch_labels_feats, val_batch_mask)
-        #         loss_train = loss_fcn(val_output_att, val_batch_y)
-        #     scalar.scale(loss_train).backward()
-        #     scalar.step(optimizer_a)
-        #     scalar.update()
-        # else:
-        val_output_att = model(val_batch, val_batch_feats, meta_sampled, label_sampled, val_batch_labels_feats, val_batch_mask)
-        L1 = loss_fcn(val_output_att, val_batch_y)
-        val_loss_train = L1
-        val_loss_train.backward()
-        optimizer_a.step()
-
-        ########################################
-        y_true.append(batch_y.cpu().to(torch.long))
-        val_y_true.append(val_batch_y.cpu().to(torch.long))
-        if isinstance(loss_fcn, nn.BCEWithLogitsLoss):
-            y_pred.append((output_att.data.cpu() > 0.).int())
-            val_y_pred.append((val_output_att.data.cpu() > 0.).int())
-        else:
-            y_pred.append(output_att.argmax(dim=-1, keepdim=True).cpu())
-            val_y_pred.append(val_output_att.argmax(dim=-1, keepdim=True).cpu())
-        total_loss += loss_train.item()
-        val_total_loss += val_loss_train.item()
-        iter_num += 1
-        # import code
-        # code.interact(local=locals())
-
-    loss_train = total_loss / iter_num
-    acc_train = evaluator(torch.cat(y_true, dim=0), torch.cat(y_pred, dim=0))
-    loss_val = val_total_loss / iter_num
-    acc_val = evaluator(torch.cat(val_y_true, dim=0), torch.cat(val_y_pred, dim=0))
-
-    return loss_train, loss_val, acc_train, acc_val
-
-
-
-def train_flag(model, feats, label_feats, labels_cuda, loss_fcn, optimizer, train_loader, evaluator, step_size, m, mask=None, scalar=None):
-
-    model.train()
-    device = labels_cuda.device
-    total_loss = 0
-    iter_num = 0
-    # step_size = 1e-2
-    # m = 3
-    y_true, y_pred = [], []
-
-    for batch in train_loader:
-        batch = batch.to(device)
-        if isinstance(feats, list):
-            batch_feats = [x[batch].to(device) for x in feats]
-        elif isinstance(feats, dict):
-            batch_feats = {k: x[batch].to(device) for k, x in feats.items()}
-        else:
-            assert 0
-        batch_labels_feats = {k: x[batch].to(device) for k, x in label_feats.items()}
-        if mask is not None:
-            batch_mask = {k: x[batch].to(device) for k, x in mask.items()}
-        else:
-            batch_mask = None
-        batch_y = labels_cuda[batch]
-
-
-        def forward(k, perturb):
-            # import code
-            # code.interact(local=locals())
-            #perturb_feats = {k: x+perturb[k] for k, x in batch_feats.items()}
-            batch_feats[k] = batch_feats[k] + perturb
-            # import code
-            # code.interact(local=locals())
-            #print (batch_feats[k][0][0:10])
-            return model(batch, batch_feats, batch_labels_feats, batch_mask)
-        model_forward = (model,forward)
-        feats_shape = {k: x.shape for k, x in batch_feats.items()}
-        if scalar is not None:
-            with torch.cuda.amp.autocast():
-                loss_train, output_att = flag(model_forward, feats_shape, batch_y, step_size, m, optimizer, device, F.nll_loss, scalar)
-        else:
-            loss, output_att = flag(model_forward, batch_feats.shape, batch_y, step_size, m, optimizer, device, F.nll_loss)
-
-
-        y_true.append(batch_y.cpu().to(torch.long))
-        if isinstance(loss_fcn, nn.BCEWithLogitsLoss):
-            y_pred.append((output_att.data.cpu() > 0.).int())
-        else:
-            y_pred.append(output_att.argmax(dim=-1, keepdim=True).cpu())
-        total_loss += loss_train.item()
-        iter_num += 1
-    loss = total_loss / iter_num
-    acc = evaluator(torch.cat(y_true, dim=0), torch.cat(y_pred, dim=0))
-    return loss, acc
-
-
-
-
-
-
-def train_2l(model, feats, label_feats, labels_cuda, loss_fcn, optimizer, train_loader, evaluator, tgt_type, scalar=None):
-    model.train()
-    device = labels_cuda.device
-    total_loss = 0
-    iter_num = 0
-    y_true, y_pred = [], []
-
-    for batch in train_loader:
-        batch = batch.to(device)
-
-        layer2_feats = {k: x[batch] for k, x in feats.items() if k[0] == tgt_type}
-        batch_labels_feats = {k: x[batch] for k, x in label_feats.items()}
-
-        involved_keys = {}
-        for k, v in layer2_feats.items():
-            src = k[-1]
-            if src not in involved_keys:
-                involved_keys[src] = []
-            involved_keys[src].append(torch.unique(v.storage.col()))
-        involved_keys = {k: torch.unique(torch.cat(v)) for k, v in involved_keys.items()}
-
-        for k, v in layer2_feats.items():
-            src = k[-1]
-            old_nnz = v.nnz()
-            layer2_feats[k] = v[:, involved_keys[src]]
-            assert layer2_feats[k].nnz() == old_nnz
-
-        layer1_feats = {k: v[involved_keys[k[0]]] for k, v in feats.items() if k[0] in involved_keys}
-
-        batch1 = {k: v.to(device) for k,v in involved_keys.items()}
-        layer1_feats = {k: v.to(device) for k,v in layer1_feats.items()}
-        batch2 = batch.to(device)
-        layer2_feats = {k: v.to(device) for k,v in layer2_feats.items()}
-        batch_labels_feats = {k: x.to(device) for k, x in batch_labels_feats.items()}
-        batch_y = labels_cuda[batch]
-
-        optimizer.zero_grad()
-        if scalar is not None:
-            with torch.cuda.amp.autocast():
-                output_att = model(layer1_feats, batch1, layer2_feats, batch2, batch_labels_feats)
-                loss_train = loss_fcn(output_att, batch_y)
-            scalar.scale(loss_train).backward()
-            scalar.step(optimizer)
-            scalar.update()
-        else:
-            output_att = model(layer1_feats, batch1, layer2_feats, batch2, batch_labels_feats)
-            L1 = loss_fcn(output_att, batch_y)
-            loss_train = L1
-            loss_train.backward()
-            optimizer.step()
-
-        y_true.append(batch_y.cpu().to(torch.long))
-        if isinstance(loss_fcn, nn.BCEWithLogitsLoss):
-            y_pred.append((output_att.data.cpu() > 0.).int())
-        else:
-            y_pred.append(output_att.argmax(dim=-1, keepdim=True).cpu())
-        total_loss += loss_train.item()
-        iter_num += 1
-    loss = total_loss / iter_num
-    acc = evaluator(torch.cat(y_true, dim=0), torch.cat(y_pred, dim=0))
-    return loss, acc
-
-def edge_mask(etypes,adjs,edge_mask_ratio):
-    from collections import Counter
-    etypes_ditc ={}
-
-    generator = torch.Generator().manual_seed(1)
-
-    for etype, adj in zip(etypes, adjs): 
-        etypes_ditc[etype] = [adj,False]
-
-    for key in etypes: 
-        if not etypes_ditc[key][1]:
-            etypes_ditc[key][1] = True
-            row = etypes_ditc[key][0].storage._row
-            col = etypes_ditc[key][0].storage._col
-
-            row_list,col_list = row.cpu().tolist(),col.cpu().tolist()
-            row_Counter = Counter(row_list)
-            col_Counter = Counter(col_list)
-            row_Counter = set([key for key in row_Counter.keys() if row_Counter[key] == 1])
-            col_Counter = set([key for key in col_Counter.keys() if col_Counter[key] == 1])
-
-            single_edge = torch.zeros(row.shape) == 0.0
-            for index in range(len(row_list)):
-                if row_list[index] in row_Counter or col_list[index] in col_Counter:
-                    single_edge[index] = False
-
-            edge_mask = torch.zeros(row.shape) != 0.0
-            mid_mask = torch.rand((single_edge.sum().item()), generator=generator) < edge_mask_ratio
-            edge_mask[single_edge] = mid_mask
-
-            edge_mask = ~edge_mask
-
-            row = row[edge_mask]
-            col = col[edge_mask]
-
-            etypes_ditc[key][0].storage._row,etypes_ditc[key][0].storage._col = row,col
-            new_key = (key[2],key[1][::-1],key[0])
-            if new_key in etypes_ditc and not etypes_ditc[new_key][1]:
-                etypes_ditc[new_key][1] = True
-                etypes_ditc[new_key][0].storage._row,etypes_ditc[new_key][0].storage._col = col,row
-
-
 def load_dataset(args):
     dl = data_loader(f'{args.root}/{args.dataset}')
-
-    edge_mask_ratio = args.edge_mask_ratio
 
     # use one-hot index vectors for nods with no attributes
     # === feats ===
@@ -858,7 +567,7 @@ def load_dataset(args):
     # for k, v in dl.nodes['attr'].items():
     #     if v is None: print('none')
     #     else: print(v.shape)
-    adjs = [] if args.dataset != 'Freebase' else {}
+    adjs = []
     for i, (k, v) in enumerate(dl.links['data'].items()):
         v = v.tocoo()
         src_type_idx = np.where(idx_shift > v.col[0])[0][0] - 1
@@ -867,12 +576,8 @@ def load_dataset(args):
         col = v.col - idx_shift[src_type_idx]
         sparse_sizes = (dl.nodes['count'][dst_type_idx], dl.nodes['count'][src_type_idx])
         adj = SparseTensor(row=torch.LongTensor(row), col=torch.LongTensor(col), sparse_sizes=sparse_sizes)
-        if args.dataset == 'Freebase':
-            name = f'{dst_type_idx}{src_type_idx}'
-            assert name not in adjs
-            adjs[name] = adj
-        else:
-            adjs.append(adj)
+
+        adjs.append(adj)
             #print(adj)
 
 
@@ -897,12 +602,7 @@ def load_dataset(args):
             ('P', 'P-T', 'T'),
             ('P', 'P-V', 'V'),
         ]
-        if edge_mask_ratio != 0:
-            edge_mask(etypes,adjs,edge_mask_ratio)
-
-
-                    
-        
+    
         
         for etype, adj in zip(etypes, adjs):
             stype, rtype, dtype = etype
@@ -950,8 +650,7 @@ def load_dataset(args):
             ('K', 'K-M', 'M'),
             ('M', 'M-K', 'K'),
         ]
-        if edge_mask_ratio != 0:
-            edge_mask(etypes,adjs,edge_mask_ratio)
+
         for etype, adj in zip(etypes, adjs):
             stype, rtype, dtype = etype
             dst, src, _ = adj.coo()
@@ -1003,8 +702,7 @@ def load_dataset(args):
             ('P', 'P-C', 'C'),
         ]
 
-        if edge_mask_ratio != 0:
-            edge_mask(etypes,adjs,edge_mask_ratio)
+
         if args.ACM_keep_F:
             etypes += [
                 ('K', 'K-P', 'P'),
@@ -1026,30 +724,6 @@ def load_dataset(args):
         g.nodes['C'].data['C'] = C # [56, 1902]
         if args.ACM_keep_F:
             g.nodes['K'].data['K'] = K # [1902, 1902]
-    elif args.dataset == 'Freebase':
-        # 0*: 40402  2/4/7 <-- 0 <-- 0/1/3/5/6
-        #  1: 19427  all <-- 1
-        #  2: 82351  4/6/7 <-- 2 <-- 0/1/2/3/5
-        #  3: 1025   0/2/4/6/7 <-- 3 <-- 1/3/5
-        #  4: 17641  4 <-- all
-        #  5: 9368   0/2/3/4/6/7 <-- 5 <-- 1/5
-        #  6: 2731   0/4 <-- 6 <-- 1/2/3/5/6/7
-        #  7: 7153   4/6 <-- 7 <-- 0/1/2/3/5/7
-        for i in range(8):
-            kk = str(i)
-            print(f'==={kk}===')
-            for k, v in adjs.items():
-                t, s = k
-                assert s == t or f'{s}{t}' not in adjs
-                if s == kk or t == kk:
-                    if s == t:
-                        print(k, v.sizes(), v.nnz(),
-                              f'symmetric {v.is_symmetric()}; selfloop-ratio: {v.get_diag().sum()}/{v.size(0)}')
-                    else:
-                        print(k, v.sizes(), v.nnz())
-
-        adjs['00'] = adjs['00'].to_symmetric()
-        g = None
     else:
         assert 0
 
@@ -1059,15 +733,6 @@ def load_dataset(args):
         adjs = {'PP': PP, 'PA': PA, 'AP': AP, 'PC': PC, 'CP': CP}
     elif args.dataset == 'IMDB':
         adjs = {'MD': MD, 'DM': DM, 'MA': MA, 'AM': AM, 'MK': MK, 'KM': KM}
-    elif args.dataset == 'Freebase':
-        new_adjs = {}
-        for rtype, adj in adjs.items():
-            dtype, stype = rtype
-            if dtype != stype:
-                new_name = f'{stype}{dtype}'
-                assert new_name not in adjs
-                new_adjs[new_name] = adj.t()
-        adjs.update(new_adjs)
     else:
         assert 0
 

@@ -1,6 +1,5 @@
 import os
 import gc
-import re
 import time
 import uuid
 import argparse
@@ -10,12 +9,10 @@ from tqdm import tqdm
 
 import torch
 import torch.nn.functional as F
-from torch_sparse import SparseTensor
-from torch_sparse import remove_diag, set_diag
+from torch_sparse import remove_diag
 
-from model_path import *
+from model import *
 from utils import *
-from sparse_tools import SparseAdjList
 from arch import archs
 
 
@@ -26,10 +23,9 @@ def main(args):
     g, adjs, init_labels, num_classes, dl, train_nid, val_nid, test_nid, test_nid_full \
         = load_dataset(args)
 
-    if not args.neighbor_attention:
-        for k in adjs.keys():
-            adjs[k].storage._value = None
-            adjs[k].storage._value = torch.ones(adjs[k].nnz()) / adjs[k].sum(dim=-1)[adjs[k].storage.row()]
+    for k in adjs.keys():
+        adjs[k].storage._value = None
+        adjs[k].storage._value = torch.ones(adjs[k].nnz()) / adjs[k].sum(dim=-1)[adjs[k].storage.row()]
 
     # =======
     # rearange node idx (for feats & labels)
@@ -72,160 +68,34 @@ def main(args):
         tgt_type = 'M'
         node_types = ['M', 'A', 'D', 'K']
         extra_metapath = []
-    elif args.dataset == 'Freebase':
-        tgt_type = '0'
-        node_types = [str(i) for i in range(8)]
-        extra_metapath = []
     else:
         assert 0
     extra_metapath = [ele for ele in extra_metapath if len(ele) > args.num_hops + 1]
 
     print(f'Current num hops = {args.num_hops}')
 
-    if args.dataset == 'Freebase':
-        prop_device = 'cuda:{}'.format(args.gpu) if not args.cpu else 'cpu'
-    else:
-        prop_device = 'cpu'
+    prop_device = 'cpu'
     store_device = 'cpu'
-
-    if args.dataset == 'Freebase':
-        if not os.path.exists('./Freebase_adjs'):
-            os.makedirs('./Freebase_adjs')
-        num_tgt_nodes = dl.nodes['count'][0]
 
     # compute k-hop feature
     prop_tic = datetime.datetime.now()
-    if args.dataset != 'Freebase':
-        if len(extra_metapath):
-            max_length = max(args.num_hops + 1, max([len(ele) for ele in extra_metapath]))
-        else:
-            max_length = args.num_hops + 1
 
-        if args.neighbor_attention:
-            meta_adjs = hg_propagate_sparse_pyg(adjs, tgt_type, args.num_hops, max_length, extra_metapath, prop_feats=True, echo=True, prop_device='cpu')
-            assert tgt_type not in meta_adjs
-            raw_feats = {k: g.nodes[k].data[k].clone() for k in g.ndata.keys()}
-            print(f'For tgt {tgt_type}, Involved raw_feat keys {raw_feats.keys()}, feats keys {meta_adjs.keys()}')
-        elif args.two_layer:
-            assert node_types[0] == tgt_type
-            meta_adjs = hg_propagate_sparse_pyg(adjs, node_types, args.num_hops, max_length, extra_metapath, prop_feats=True, echo=True, prop_device='cpu')
-            for k in meta_adjs.keys(): assert len(k) > 1, k 
-            raw_feats = {k: g.nodes[k].data[k].clone() for k in g.ndata.keys()}
-            print(f'For tgt {tgt_type}, Involved raw_feat keys {raw_feats.keys()}, feats keys {meta_adjs.keys()}')
-        else:
-            g = hg_propagate_feat_dgl_path(g, tgt_type, args.num_hops, max_length, archs[args.arch][0], echo=False)
-            # import code
-            # code.interact(local=locals())
-            feats = {}
-            keys = list(g.nodes[tgt_type].data.keys())
-            print(f'For tgt {tgt_type}, feature keys {keys}')
-            for k in keys:
-                feats[k] = g.nodes[tgt_type].data.pop(k)
+    if len(extra_metapath):
+        max_length = max(args.num_hops + 1, max([len(ele) for ele in extra_metapath]))
     else:
-        if len(extra_metapath):
-            max_length = max(args.num_hops + 1, max([len(ele) for ele in extra_metapath]))
-        else:
-            max_length = args.num_hops + 1
+        max_length = args.num_hops + 1
 
-        if args.two_layer:
-            meta_adjs = hg_propagate_sparse_pyg(adjs, node_types, args.num_hops, max_length, extra_metapath, prop_feats=True, echo=False, prop_device='cpu')
-            for k in meta_adjs.keys(): assert len(k) > 1, k
-        elif args.num_hops == 1:
-            meta_adjs = {k: v.clone() for k, v in adjs.items() if k[0] == tgt_type}
-        else:
-            save_name = f'./Freebase_adjs/feat_seed{args.seed}_hop{args.num_hops}'
-            if args.seed > 0 and os.path.exists(f'{save_name}_00_int64.npy'):
-                # meta_adjs = torch.load(save_name)
-                meta_adjs = {}
-                for srcname in tqdm(dl.nodes['count'].keys()):
-                    tmp = SparseAdjList(f'{save_name}_0{srcname}', None, None, num_tgt_nodes, dl.nodes['count'][srcname], with_values=True)
-                    for k in tmp.keys:
-                        assert k not in meta_adjs
-                    meta_adjs.update(tmp.load_adjs(expand=True))
-                    del tmp
-            else:
-                meta_adjs = hg_propagate_sparse_pyg(adjs, tgt_type, args.num_hops, max_length, extra_metapath, prop_feats=True, echo=False, prop_device=prop_device)
-
-                meta_adj_list = []
-                for srcname in dl.nodes['count'].keys():
-                    keys = [k for k in meta_adjs.keys() if k[-1] == str(srcname)]
-                    tmp = SparseAdjList(f'{save_name}_0{srcname}', keys, meta_adjs, num_tgt_nodes, dl.nodes['count'][srcname], with_values=True)
-                    meta_adj_list.append(tmp)
-
-                for srcname in dl.nodes['count'].keys():
-                    tmp = SparseAdjList(f'{save_name}_0{srcname}', None, None, num_tgt_nodes, dl.nodes['count'][srcname], with_values=True)
-                    tmp_adjs = tmp.load_adjs(expand=True)
-                    #print(srcname, tmp.keys)
-                    for k in tmp.keys:
-                        assert torch.all(meta_adjs[k].storage.rowptr() == tmp_adjs[k].storage.rowptr())
-                        assert torch.all(meta_adjs[k].storage.col() == tmp_adjs[k].storage.col())
-                        assert torch.all(meta_adjs[k].storage.value() == tmp_adjs[k].storage.value())
-                    del tmp_adjs, tmp
-                    gc.collect()
-        feats = {k: v.clone() for k, v in meta_adjs.items() if len(k) <= args.num_hops + 1 or k in extra_metapath}  # feats here
-        if args.neighbor_attention:
-            for k in feats.keys():
-                feats[k].storage._value = None
-
-        assert '0' not in feats
-        if not args.neighbor_attention and not args.two_layer:
-            feats['0'] = SparseTensor.eye(dl.nodes['count'][0])
-        print(f'For tgt {tgt_type}, Involved keys {feats.keys()}')
+    g = hg_propagate_feat_dgl_path(g, tgt_type, args.num_hops, max_length, archs[args.arch][0], echo=False)
+    feats = {}
+    keys = list(g.nodes[tgt_type].data.keys())
+    print(f'For tgt {tgt_type}, feature keys {keys}')
+    for k in keys:
+        feats[k] = g.nodes[tgt_type].data.pop(k)
 
     if args.dataset in ['DBLP', 'ACM', 'IMDB']:
-        if args.neighbor_attention or args.two_layer:
-            data_size = {k: g.ndata[k][k].size(-1) for k in g.ndata.keys()}
-            raw_feats[tgt_type] = raw_feats[tgt_type][init2sort]
+        data_size = {k: v.size(-1) for k, v in feats.items()}
+        feats = {k: v[init2sort] for k, v in feats.items()}
 
-            feats = {}
-
-            for k, v in tqdm(meta_adjs.items()):
-                assert len(k) > 1
-                if k[0] == tgt_type and k[-1] == tgt_type:
-                    feats[k] = v[init2sort, init2sort]
-                elif k[0] == tgt_type:
-                    feats[k] = v[init2sort]
-                else:
-                    assert args.two_layer
-                    if k[-1] == tgt_type:
-                        feats[k] = v[:, init2sort]
-                    else:
-                        feats[k] = v
-            #feats = {k: v for k, v in feats.items() if k in archs[args.arch][0] or k==tgt_type}
-
-        else:
-            # import code
-            # code.interact(local=locals())
-            data_size = {k: v.size(-1) for k, v in feats.items()}
-            feats = {k: v[init2sort] for k, v in feats.items()}
-            #feats = {k: v[init2sort] for k, v in feats.items() if k in archs[args.arch][0] or k==tgt_type}    # feats here
-
-    elif args.dataset == 'Freebase':
-        data_size = dict(dl.nodes['count'])
-        if args.neighbor_attention or args.two_layer:
-            raw_feats = {}
-            for k, count in data_size.items():
-                raw_feats[k] = SparseTensor(row=torch.arange(count), col=torch.arange(count))
-
-        for k, v in tqdm(feats.items()):
-            if len(k) == 1:
-                assert not args.neighbor_attention and not args.two_layer
-                continue
-
-            if k[0] == '0' and k[-1] == '0':
-                # feats[k] = v[init2sort[:total_num_nodes], init2sort]
-                # feats[k] = v[init2sort, init2sort]
-                feats[k], _ = v.sample_adj(init2sort, -1, False) # faster, 50% time acceleration
-            elif k[0] == '0':
-                # feats[k] = v[init2sort[:total_num_nodes]]
-                feats[k] = v[init2sort]
-            else:
-                assert args.two_layer, k
-                if k[-1] == tgt_type:
-                    feats[k] = v[:, init2sort]
-                else:
-                    feats[k] = v
-        #feats = {k: v for k, v in feats.items() if k in archs[args.arch][0] or k==tgt_type}
     else:
         assert 0
 
@@ -277,8 +147,6 @@ def main(args):
                 extra_metapath = []
             elif args.dataset == 'ACM':
                 extra_metapath = []
-            elif args.dataset == 'Freebase':
-                extra_metapath = []
             else:
                 assert 0
 
@@ -291,87 +159,24 @@ def main(args):
             print(f'Current label-prop num hops = {args.num_label_hops}')
             # compute k-hop feature
             prop_tic = datetime.datetime.now()
-            if args.dataset == 'Freebase' and args.num_label_hops <= args.num_hops and len(extra_metapath) == 0:
-                meta_adjs = {k: v for k, v in meta_adjs.items() if k[-1] == '0' and len(k) < max_length}
+
+            meta_adjs = hg_propagate_sparse_pyg(
+                adjs, tgt_type, args.num_label_hops, max_length, extra_metapath, prop_feats=False, echo=False, prop_device=prop_device)
+
+            for k, v in tqdm(meta_adjs.items()):
+                label_feats[k] = remove_diag(v) @ label_onehot
+
+            gc.collect()
+
+            if args.dataset == 'IMDB':
+                condition = lambda ra,rb,rc,k: True
+                check_acc(label_feats, condition, init_labels, train_nid, val_nid, test_nid, show_test=False, loss_type='bce')
             else:
-                if args.dataset == 'Freebase':
-                    save_name = f'./Freebase_adjs/label_seed{args.seed}_hop{args.num_label_hops}'
-                    if args.seed > 0 and os.path.exists(f'{save_name}_int64.npy'):
-                        meta_adj_list = SparseAdjList(save_name, None, None, num_tgt_nodes, num_tgt_nodes, with_values=True)
-                        meta_adjs = meta_adj_list.load_adjs(expand=True)
-                    else:
-                        meta_adjs = hg_propagate_sparse_pyg(
-                            adjs, tgt_type, args.num_label_hops, max_length, extra_metapath, prop_feats=False, echo=False, prop_device=prop_device)
-                        meta_adj_list = SparseAdjList(save_name, meta_adjs.keys(), meta_adjs, num_tgt_nodes, num_tgt_nodes, with_values=True)
-
-                        tmp = SparseAdjList(save_name, None, None, num_tgt_nodes, num_tgt_nodes, with_values=True)
-                        tmp_adjs = tmp.load_adjs(expand=True)
-                        for k in tmp.keys:
-                            assert torch.all(meta_adjs[k].storage.rowptr() == tmp_adjs[k].storage.rowptr())
-                            assert torch.all(meta_adjs[k].storage.col() == tmp_adjs[k].storage.col())
-                            assert torch.all(meta_adjs[k].storage.value() == tmp_adjs[k].storage.value())
-                        del tmp_adjs, tmp
-                        gc.collect()
-                else:
-                    meta_adjs = hg_propagate_sparse_pyg(
-                        adjs, tgt_type, args.num_label_hops, max_length, extra_metapath, prop_feats=False, echo=False, prop_device=prop_device)
-
-            if args.dataset == 'Freebase':
-                if 0:
-                    label_onehot_g = label_onehot.to(prop_device)
-                    for k, v in tqdm(meta_adjs.items()):
-                        if args.dataset != 'Freebase':
-                            label_feats[k] = remove_diag(v) @ label_onehot
-                        else:
-                            label_feats[k] = (remove_diag(v).to(prop_device) @ label_onehot_g).to(store_device)
-
-                    del label_onehot_g
-                    torch.cuda.empty_cache()
-                    gc.collect()
-
-                    condition = lambda ra,rb,rc,k: rb > 0.2
-                    check_acc(label_feats, condition, init_labels, train_nid, val_nid, test_nid, show_test=False)
-
-                    left_keys = ['00', '000', '0000', '0010', '0030', '0040', '0050', '0060', '0070']
-                    remove_keys = list(set(list(label_feats.keys())) - set(left_keys))
-                    for k in remove_keys:
-                        label_feats.pop(k)
-                else:
-                    left_keys = ['00', '000', '0000', '0010', '0030', '0040', '0050', '0060', '0070']
-                    remove_keys = list(set(list(meta_adjs.keys())) - set(left_keys))
-                    for k in remove_keys:
-                        meta_adjs.pop(k)
-
-                    label_onehot_g = label_onehot.to(prop_device)
-                    for k, v in tqdm(meta_adjs.items()):
-                        if args.dataset != 'Freebase':
-                            label_feats[k] = remove_diag(v) @ label_onehot
-                        else:
-                            label_feats[k] = (remove_diag(v).to(prop_device) @ label_onehot_g).to(store_device)
-
-                    del label_onehot_g
-                    torch.cuda.empty_cache()
-                    gc.collect()
-            else:
-                for k, v in tqdm(meta_adjs.items()):
-                    if args.dataset != 'Freebase':
-                        label_feats[k] = remove_diag(v) @ label_onehot
-                    else:
-                        label_feats[k] = (remove_diag(v).to(prop_device) @ label_onehot_g).to(store_device)
-                gc.collect()
-
-                if args.dataset == 'IMDB':
-                    condition = lambda ra,rb,rc,k: True
-                    check_acc(label_feats, condition, init_labels, train_nid, val_nid, test_nid, show_test=False, loss_type='bce')
-                else:
-                    condition = lambda ra,rb,rc,k: True
-                    check_acc(label_feats, condition, init_labels, train_nid, val_nid, test_nid, show_test=True)
+                condition = lambda ra,rb,rc,k: True
+                check_acc(label_feats, condition, init_labels, train_nid, val_nid, test_nid, show_test=True)
             print('Involved label keys', label_feats.keys())
 
-
             label_feats = {k: v[init2sort] for k,v in label_feats.items() if k in archs[args.arch][1]}   # if k in archs[args.arch][1]
-            # import code
-            # code.interact(local=locals())
 
             prop_toc = datetime.datetime.now()
             print(f'Time used for label prop {prop_toc - prop_tic}')
@@ -386,129 +191,44 @@ def main(args):
         # Mask & Smooth
         # =======
         with_mask = False
-        # if args.dataset == 'Freebase':
-        #     init_mask = {k: v.storage.rowcount() != 0 for k, v in feats.items()}
-        #     with_mask = True
-        # else:
-        #     print(f'TODO: `with_mask` has not be implemented for {args.dataset}')
 
-        # if with_mask:
-        #     train_mask = {k: (v[:total_num_nodes] & (torch.randn(total_num_nodes) > 0)).float() for k, v in init_mask.items()}
-        #     full_mask = {k: v.float() for k, v in init_mask.items()}
-        # else:
-        #     train_mask = full_mask = None
-
-        # Freebase train/val/test/full_nodes: 1909/477/5568/40402
-        # IMDB     train/val/test/full_nodes: 1097/274/3202/359
         eval_loader, full_loader = [], []
         batchsize = 2 * args.batch_size
 
-        if args.two_layer:
-            for batch_idx in range((total_num_nodes-1) // batchsize + 1):
-                batch_start = batch_idx * batchsize
-                batch_end = min(total_num_nodes, (batch_idx+1) * batchsize)
-                batch = torch.arange(batch_start, batch_end)
+        for batch_idx in range((total_num_nodes-1) // batchsize + 1):
+            batch_start = batch_idx * batchsize
+            batch_end = min(total_num_nodes, (batch_idx+1) * batchsize)
+            batch = torch.arange(batch_start, batch_end)
 
-                layer2_feats = {k: x[batch_start:batch_end] for k, x in feats.items() if k[0] == tgt_type}
-                batch_labels_feats = {k: x[batch_start:batch_end] for k, x in label_feats.items()}
+            batch_feats = {k: x[batch_start:batch_end] for k, x in feats.items()}
+            batch_labels_feats = {k: x[batch_start:batch_end] for k, x in label_feats.items()}
 
-                involved_keys = {}
-                for k, v in layer2_feats.items():
-                    src = k[-1]
-                    if src not in involved_keys:
-                        involved_keys[src] = []
-                    involved_keys[src].append(torch.unique(v.storage.col()))
-                involved_keys = {k: torch.unique(torch.cat(v)) for k, v in involved_keys.items()}
+            batch_mask = None
+            eval_loader.append((batch, batch_feats, batch_labels_feats, batch_mask))
 
-                for k, v in layer2_feats.items():
-                    src = k[-1]
-                    old_nnz = v.nnz()
-                    layer2_feats[k] = v[:, involved_keys[src]]
-                    assert layer2_feats[k].nnz() == old_nnz
+        for batch_idx in range((num_nodes-total_num_nodes-1) // batchsize + 1):
+            batch_start = batch_idx * batchsize + total_num_nodes
+            batch_end = min(num_nodes, (batch_idx+1) * batchsize + total_num_nodes)
+            batch = torch.arange(batch_start, batch_end)
 
-                layer1_feats = {k: v[involved_keys[k[0]]] for k, v in feats.items() if k[0] in involved_keys}
+            batch_feats = {k: x[batch_start:batch_end] for k, x in feats.items()}
+            batch_labels_feats = {k: x[batch_start:batch_end] for k, x in label_feats.items()}
 
-                eval_loader.append((involved_keys, layer1_feats, batch, layer2_feats, batch_labels_feats))
-
-            for batch_idx in range((num_nodes-total_num_nodes-1) // batchsize + 1):
-                batch_start = batch_idx * batchsize + total_num_nodes
-                batch_end = min(num_nodes, (batch_idx+1) * batchsize + total_num_nodes)
-                batch = torch.arange(batch_start, batch_end)
-
-                layer2_feats = {k: x[batch_start:batch_end] for k, x in feats.items() if k[0] == tgt_type}
-                batch_labels_feats = {k: x[batch_start:batch_end] for k, x in label_feats.items()}
-
-                involved_keys = {}
-                for k, v in layer2_feats.items():
-                    src = k[-1]
-                    if src not in involved_keys:
-                        involved_keys[src] = []
-                    involved_keys[src].append(torch.unique(v.storage.col()))
-                involved_keys = {k: torch.unique(torch.cat(v)) for k, v in involved_keys.items()}
-
-                for k, v in layer2_feats.items():
-                    src = k[-1]
-                    old_nnz = v.nnz()
-                    layer2_feats[k] = v[:, involved_keys[src]]
-                    assert layer2_feats[k].nnz() == old_nnz
-
-                layer1_feats = {k: v[involved_keys[k[0]]] for k, v in feats.items() if k[0] in involved_keys}
-
-                full_loader.append((involved_keys, layer1_feats, batch, layer2_feats, batch_labels_feats))
-        else:
-            for batch_idx in range((total_num_nodes-1) // batchsize + 1):
-                batch_start = batch_idx * batchsize
-                batch_end = min(total_num_nodes, (batch_idx+1) * batchsize)
-                batch = torch.arange(batch_start, batch_end)
-
-                batch_feats = {k: x[batch_start:batch_end] for k, x in feats.items()}
-                batch_labels_feats = {k: x[batch_start:batch_end] for k, x in label_feats.items()}
-                if with_mask:
-                    batch_mask = {k: x[batch_start:batch_end] for k, x in full_mask.items()}
-                else:
-                    batch_mask = None
-                eval_loader.append((batch, batch_feats, batch_labels_feats, batch_mask))
-
-            for batch_idx in range((num_nodes-total_num_nodes-1) // batchsize + 1):
-                batch_start = batch_idx * batchsize + total_num_nodes
-                batch_end = min(num_nodes, (batch_idx+1) * batchsize + total_num_nodes)
-                batch = torch.arange(batch_start, batch_end)
-
-                batch_feats = {k: x[batch_start:batch_end] for k, x in feats.items()}
-                batch_labels_feats = {k: x[batch_start:batch_end] for k, x in label_feats.items()}
-                if with_mask:
-                    batch_mask = {k: x[batch_start:batch_end] for k, x in full_mask.items()}
-                else:
-                    batch_mask = None
-                full_loader.append((batch, batch_feats, batch_labels_feats, batch_mask))
+            batch_mask = None
+            full_loader.append((batch, batch_feats, batch_labels_feats, batch_mask))
 
         # =======
         # Construct network
         # =======
         torch.cuda.empty_cache()
         gc.collect()
-        if args.neighbor_attention:
-            model = SeHGNN_NA(args.embed_size, args.hidden, num_classes, feats.keys(), label_feats.keys(), tgt_type,
-                args.dropout, args.input_drop, args.att_drop, args.label_drop,
-                args.n_layers_1, args.n_layers_2, args.act, args.residual, bns=args.bns, data_size=data_size, num_heads=args.num_heads)
-        elif args.two_linear:
-            # model = SeHGNN_2L(args.embed_size, args.hidden, num_classes,
-            #     feats.keys(), [k for k in feats.keys() if k[0] == tgt_type], label_feats.keys(), node_types,
-            #     args.dropout, args.input_drop, args.att_drop, args.label_drop,
-            #     args.n_layers_1, args.n_layers_2, args.act, args.residual, bns=args.bns, data_size=data_size)
-            model = SeHGNN_2Linear(args.embed_size, args.hidden, num_classes, feats.keys(), label_feats.keys(), tgt_type,
-                           args.dropout, args.input_drop, args.att_drop, args.label_drop,
-                           args.n_layers_1, args.n_layers_2, args.act, args.residual, bns=args.bns, data_size=data_size,
-                           num_heads=args.nh, path=archs[args.arch][0],
-                           label_path=archs[args.arch][1], eps=args.eps, device=device,
-                           remove_transformer=args.remove_transformer, independent_attn=args.independent_attn)
-        else:
-            model = SeHGNN(args.embed_size, args.hidden, num_classes, feats.keys(), label_feats.keys(), tgt_type,
-                args.dropout, args.input_drop, args.att_drop, args.label_drop,
-                args.n_layers_1, args.n_layers_2, args.act, args.residual, args.identity, bns=args.bns, data_size=data_size, num_heads=args.nh, path=archs[args.arch][0],
-                label_path=archs[args.arch][1], eps=args.eps, device=device, remove_transformer=args.remove_transformer, independent_attn=args.independent_attn, dataset=args.dataset)
+        model = LDMLP(args.embed_size, args.hidden, num_classes, feats.keys(), label_feats.keys(), tgt_type,
+            args.dropout, args.input_drop, args.att_drop, args.label_drop,
+            args.n_layers_2,  args.residual, bns=args.bns, data_size=data_size, path=archs[args.arch][0],
+            label_path=archs[args.arch][1], eps=args.eps, device=device)
+        
         model = model.to(device)
-        if args.seed == args.seeds[-1]:
+        if args.seed == args.seeds[0]:
             #print(model)
             print("# Params:", get_n_params(model))
 
@@ -533,17 +253,12 @@ def main(args):
 
         train_times = []
 
-        if args.neighbor_attention or args.two_layer:
-            model.feats = {k: v.to(device) for k, v in raw_feats.items()}
 
         for epoch in tqdm(range(args.stage)):
             gc.collect()
             torch.cuda.synchronize()
             start = time.time()
-            if args.two_layer:
-                loss, acc = train_2l(model, feats, label_feats, labels_cuda, loss_fcn, optimizer, train_loader, evaluator, tgt_type, scalar=scalar)
-            else:
-                loss, acc = train(model, feats, label_feats, labels_cuda, loss_fcn, optimizer, train_loader, evaluator, scalar=scalar)
+            loss, acc = train(model, feats, label_feats, labels_cuda, loss_fcn, optimizer, train_loader, evaluator, scalar=scalar)
             torch.cuda.synchronize()
             end = time.time()
 
@@ -555,24 +270,16 @@ def main(args):
             with torch.no_grad():
                 model.eval()
                 raw_preds = []
-                if args.two_layer:
-                    for batch1, layer1_feats, batch2, layer2_feats, batch_labels_feats in eval_loader:
-                        batch1 = {k: v.to(device) for k,v in batch1.items()}
-                        layer1_feats = {k: v.to(device) for k,v in layer1_feats.items()}
-                        batch2 = batch2.to(device)
-                        layer2_feats = {k: v.to(device) for k,v in layer2_feats.items()}
-                        batch_labels_feats = {k: x.to(device) for k, x in batch_labels_feats.items()}
-                        raw_preds.append(model(layer1_feats, batch1, layer2_feats, batch2, batch_labels_feats).cpu())
-                else:
-                    for batch, batch_feats, batch_labels_feats, batch_mask in eval_loader:
-                        batch = batch.to(device)
-                        batch_feats = {k: x.to(device) for k, x in batch_feats.items()}
-                        batch_labels_feats = {k: x.to(device) for k, x in batch_labels_feats.items()}
-                        if with_mask:
-                            batch_mask = {k: x.to(device) for k, x in batch_mask.items()}
-                        else:
-                            batch_mask = None
-                        raw_preds.append(model(batch, batch_feats, batch_labels_feats, batch_mask).cpu())
+
+                for batch, batch_feats, batch_labels_feats, batch_mask in eval_loader:
+                    batch = batch.to(device)
+                    batch_feats = {k: x.to(device) for k, x in batch_feats.items()}
+                    batch_labels_feats = {k: x.to(device) for k, x in batch_labels_feats.items()}
+                    if with_mask:
+                        batch_mask = {k: x.to(device) for k, x in batch_mask.items()}
+                    else:
+                        batch_mask = None
+                    raw_preds.append(model(batch, batch_feats, batch_labels_feats, batch_mask).cpu())
 
                 raw_preds = torch.cat(raw_preds, dim=0)
                 loss_train = loss_fcn(raw_preds[:trainval_point], labels[:trainval_point]).item()
@@ -594,8 +301,7 @@ def main(args):
             log += 'Train acc: ({:.4f}, {:.4f}), Val acc: ({:.4f}, {:.4f}), Test acc: ({:.4f}, {:.4f}) ({})\n'.format(
                 train_acc[0]*100, train_acc[1]*100, val_acc[0]*100, val_acc[1]*100, test_acc[0]*100, test_acc[1]*100, total_num_nodes-valtest_point)
 
-            if (args.dataset != 'Freebase' and loss_val <= best_val_loss) or (
-                    args.dataset == 'Freebase' and sum(val_acc) >= sum(best_val)):
+            if loss_val <= best_val_loss:
                 best_epoch = epoch
                 best_val_loss = loss_val
                 best_test_loss = loss_test
@@ -626,24 +332,16 @@ def main(args):
             with torch.no_grad():
                 model.eval()
                 raw_preds = []
-                if args.two_layer:
-                    for batch1, layer1_feats, batch2, layer2_feats, batch_labels_feats in full_loader:
-                        batch1 = {k: v.to(device) for k,v in batch1.items()}
-                        layer1_feats = {k: v.to(device) for k,v in layer1_feats.items()}
-                        batch2 = batch2.to(device)
-                        layer2_feats = {k: v.to(device) for k,v in layer2_feats.items()}
-                        batch_labels_feats = {k: x.to(device) for k, x in batch_labels_feats.items()}
-                        raw_preds.append(model(layer1_feats, batch1, layer2_feats, batch2, batch_labels_feats).cpu())
-                else:
-                    for batch, batch_feats, batch_labels_feats, batch_mask in full_loader:
-                        batch = batch.to(device)
-                        batch_feats = {k: x.to(device) for k, x in batch_feats.items()}
-                        batch_labels_feats = {k: x.to(device) for k, x in batch_labels_feats.items()}
-                        if with_mask:
-                            batch_mask = {k: x.to(device) for k, x in batch_mask.items()}
-                        else:
-                            batch_mask = None
-                        raw_preds.append(model(batch, batch_feats, batch_labels_feats, batch_mask).cpu())
+
+                for batch, batch_feats, batch_labels_feats, batch_mask in full_loader:
+                    batch = batch.to(device)
+                    batch_feats = {k: x.to(device) for k, x in batch_feats.items()}
+                    batch_labels_feats = {k: x.to(device) for k, x in batch_labels_feats.items()}
+                    if with_mask:
+                        batch_mask = {k: x.to(device) for k, x in batch_mask.items()}
+                    else:
+                        batch_mask = None
+                    raw_preds.append(model(batch, batch_feats, batch_labels_feats, batch_mask).cpu())
                 raw_preds = torch.cat(raw_preds, dim=0)
             best_pred = torch.cat((best_pred, raw_preds), dim=0)
 
@@ -657,10 +355,10 @@ def main(args):
         test_logits = predict_prob[sort2init][test_nid_full]
         if args.dataset != 'IMDB':
             pred = test_logits.cpu().numpy().argmax(axis=1)
-            dl.gen_file_for_evaluate(test_idx=test_nid_full, label=pred, file_path=f"./tmp/{args.dataset}_{args.seed}_{checkpt_file.split('/')[-1]}.txt")
+            dl.gen_file_for_evaluate(test_idx=test_nid_full, label=pred, file_path=f"./output/{args.dataset}_{args.seed}_{checkpt_file.split('/')[-1]}.txt")
         else:
             pred = (test_logits.cpu().numpy()>0.5).astype(int)
-            dl.gen_file_for_evaluate(test_idx=test_nid_full, label=pred, file_path=f"./tmp/{args.dataset}_{args.seed}_{checkpt_file.split('/')[-1]}.txt", mode='multi')
+            dl.gen_file_for_evaluate(test_idx=test_nid_full, label=pred, file_path=f"./output/{args.dataset}_{args.seed}_{checkpt_file.split('/')[-1]}.txt", mode='multi')
 
     if args.dataset != 'IMDB':
         preds = predict_prob.argmax(dim=1, keepdim=True)
@@ -678,7 +376,7 @@ def main(args):
     return [test_acc[0]*100, test_acc[1]*100]
 
 def parse_args(args=None):
-    parser = argparse.ArgumentParser(description='SeHGNN')
+    parser = argparse.ArgumentParser(description='LDMLP')
     ## For environment costruction
     parser.add_argument("--seeds", nargs='+', type=int, default=[1],
                         help="the seed used in the training")
@@ -699,8 +397,6 @@ def parse_args(args=None):
     parser.add_argument("--hidden", type=int, default=512)
     parser.add_argument("--dropout", type=float, default=0.5,
                         help="dropout on activation")
-    parser.add_argument("--n-layers-1", type=int, default=2,
-                        help="number of layers of feature projection")
     parser.add_argument("--n-layers-2", type=int, default=3,
                         help="number of layers of the downstream task")
     parser.add_argument("--input-drop", type=float, default=0.1,
@@ -711,12 +407,8 @@ def parse_args(args=None):
                         help="label feature dropout of model")
     parser.add_argument("--residual", action='store_true', default=False,
                         help="whether to add residual branch the raw input features")
-    parser.add_argument("--act", type=str, default='relu',
-                        help="the activation function of the model")
     parser.add_argument("--bns", action='store_true', default=False,
                         help="whether to process the input features")
-    parser.add_argument("--label-bns", action='store_true', default=False,
-                        help="whether to process the input label features")
     ## for training
     parser.add_argument("--amp", action='store_true', default=False,
                         help="whether to amp to accelerate training with float16(half) calculation")
@@ -726,22 +418,9 @@ def parse_args(args=None):
     parser.add_argument("--batch-size", type=int, default=10000)
     parser.add_argument("--patience", type=int, default=100,
                         help="early stop of times of the experiment")
-    parser.add_argument("--drop-metapath", type=float, default=0,
-                        help="whether to process the input features")
-    ## for ablation
-    parser.add_argument("-na", "--neighbor-attention", action='store_true', default=False)
-    parser.add_argument("--nh", type=int, default=1)
-    parser.add_argument("--two-layer", action='store_true', default=False)
-    parser.add_argument("--remove-transformer", action='store_true', default=False)
-    parser.add_argument("--independent-attn", action='store_true', default=False)
-    # parser.add_argument("--dy", action='store_true', default=False)
-    # parser.add_argument("--path", nargs='+', type=str, default=[])
-    # parser.add_argument("--label_path", nargs='+', type=str, default=[])
+    
     parser.add_argument('--arch', type=str, default='DBLP')
     parser.add_argument("--eps", type=float, default=0)   #1e-12
-    parser.add_argument("--two_linear", action='store_true', default=False)
-    parser.add_argument("--identity", action='store_true', default=False)
-    parser.add_argument("--edge_mask_ratio", type=float, default=0)
 
 
     return parser.parse_args(args)
@@ -749,10 +428,8 @@ def parse_args(args=None):
 if __name__ == '__main__':
     args = parse_args()
 
-    # args.bns = args.bns and args.dataset == 'Freebase' # remove bn for full-batch learning
     if args.dataset == 'ACM':
         args.ACM_keep_F = False
-    assert args.neighbor_attention + args.two_layer + args.remove_transformer <= 1
 
     args.seed = args.seeds[0]
     print(args)
@@ -763,24 +440,12 @@ if __name__ == '__main__':
         print('Restart with seed =', seed)
         result = main(args)
         results.append(result)
-        # micro.append((result[0]))
-        # macro.append((result[1]))
-    # import code
-    # code.interact(local=locals())
     print('results', results)
+
     results.sort(key=lambda x: x[0], reverse=True)
     print(results)
     results = results[:5]
     mima = list(map(list, zip(*results)))
-    # for item in results:
     print(f'micro: {mima[0]}', f'macro: {mima[1]}')
     print(f'micro_mean: {np.mean(mima[0]):.2f}', f'micro_std: {np.std(mima[0]):.2f}')
     print(f'macro_mean: {np.mean(mima[1]):.2f}', f'macro_std: {np.std(mima[1]):.2f}')
-    # results = []
-    # for seed in args.seeds:
-    #     args.seed = seed
-    #     print('Restart with seed =', seed)
-    #     result = main(args)
-    #     results.append(result)
-    # for item in results:
-    #     print(f'micro: {item[0]:.2f}', f'macro: {item[1]:.2f}')

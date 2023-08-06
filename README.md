@@ -29,3 +29,6 @@ cd ..
 For HGB datasets, you can download from [the source of HGB benchmark](https://cloud.tsinghua.edu.cn/d/fc10cb35d19047a88cb1/?p=NC), and extract content from these compresesed files under the folder `'./data/'`.
 
 For experiments on the large dataset ogbn-mag, the dataset will be automatically downloaded from OGB challenge.
+
+## Acknowledgment
+This repository benefit from [SeHGNN](https://github.com/ICT-GIMLab/SeHGNN/tree/master/ogbn).
