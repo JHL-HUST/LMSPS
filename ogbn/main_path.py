@@ -9,7 +9,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from model_path import *
+from model import *
 from utils import *
 from arch import archs
 
@@ -347,7 +347,7 @@ def main(args):
         # =======
         # Construct network
         # =======
-        model = SeHGNN_mag(args.dataset,
+        model = LDMLP(args.dataset,
             data_size, args.embed_size,
             args.hidden, n_classes,
             len(feats), len(label_feats), tgt_type,
@@ -355,17 +355,14 @@ def main(args):
             input_drop=args.input_drop,
             att_drop=args.att_drop,
             label_drop=args.label_drop,
-            n_layers_1=args.n_layers_1,
             n_layers_2=args.n_layers_2,
             n_layers_3=args.n_layers_3,
-            act=args.act,
             residual=args.residual,
             bns=args.bns, label_bns=args.label_bns,
-            identity=args.identity, path=archs[args.arch][0],
+             path=archs[args.arch][0],
             label_path=label_path,
             eps = args.eps,
             device = device
-            # label_residual=stage > 0,
             )
         model = model.to(device)
         if stage == args.start_stage:
@@ -450,7 +447,7 @@ def main(args):
 
 
 def parse_args(args=None):
-    parser = argparse.ArgumentParser(description='SeHGNN')
+    parser = argparse.ArgumentParser(description='LDMLP')
     ## For environment costruction
     parser.add_argument("--seeds", nargs='+', type=int, default=[1],
                         help="the seed used in the training")
@@ -476,8 +473,6 @@ def parse_args(args=None):
     parser.add_argument("--hidden", type=int, default=512)
     parser.add_argument("--dropout", type=float, default=0.5,
                         help="dropout on activation")
-    parser.add_argument("--n-layers-1", type=int, default=2,
-                        help="number of layers of feature projection")
     parser.add_argument("--n-layers-2", type=int, default=2,
                         help="number of layers of the downstream task")
     parser.add_argument("--n-layers-3", type=int, default=4,
@@ -490,8 +485,6 @@ def parse_args(args=None):
                         help="label feature dropout of model")
     parser.add_argument("--residual", action='store_true', default=False,
                         help="whether to connect the input features")
-    parser.add_argument("--act", type=str, default='relu',
-                        help="the activation function of the model")
     parser.add_argument("--bns", action='store_true', default=False,
                         help="whether to process the input features")
     parser.add_argument("--label-bns", action='store_true', default=False,
@@ -530,10 +523,6 @@ if __name__ == '__main__':
     assert args.dataset.startswith('ogbn')
     print(args)
 
-    # for seed in args.seeds:
-    #     args.seed = seed
-    #     print('Restart with seed =', seed)
-    #     main(args)
     results = []
     for seed in args.seeds:
         args.seed = seed

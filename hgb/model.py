@@ -185,11 +185,11 @@ class LDMLP(nn.Module):
 
         return out
 
-class LHMLP_Se(nn.Module):
+class LDMLP_Se(nn.Module):
     def __init__(self, hidden, nclass, feat_keys, label_feat_keys, tgt_key, dropout, 
                  input_drop, device, residual=False, bns=False, data_size=None, num_sampled=1):
         
-        super(LHMLP_Se, self).__init__()
+        super(LDMLP_Se, self).__init__()
 
         self.feat_keys = feat_keys
         self.label_feat_keys = label_feat_keys
@@ -288,15 +288,11 @@ class LHMLP_Se(nn.Module):
         return x
 
     def sample(self, keys, label_keys, lam, topn, all_path=False):
-        '''
-        to sample one candidate edge type per link
-        '''
         length = len(self.alpha)
         seq_softmax = None if self.alpha is None else F.softmax(self.alpha, dim=-1)
         max = torch.max(seq_softmax, dim=0).values
         min = torch.min(seq_softmax, dim=0).values
         threshold = lam * max + (1 - lam) * min
-
 
         _, idxl = torch.sort(seq_softmax, descending=True)
 

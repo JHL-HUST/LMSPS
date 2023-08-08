@@ -1,33 +1,18 @@
 import os
-import sys
 import gc
 import random
-
 import dgl
 import dgl.function as fn
-
+import numpy as np
+import scipy.sparse as sp
+import sparse_tools
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+from tqdm import tqdm
 from torch_sparse import SparseTensor
-from torch_sparse import remove_diag, set_diag
-
-import numpy as np
-import scipy.sparse as sp
-from sklearn.metrics import f1_score
-from tqdm import tqdm
 from ogb.nodeproppred import DglNodePropPredDataset, Evaluator
-
-import functools
-from contextlib import closing
-import multiprocessing as mp
-from multiprocessing import Pool
-from tqdm import tqdm
-import argparse
-import pdb
-
-import sparse_tools
-from collections import Counter
 
 
 def set_random_seed(seed=0):
@@ -200,10 +185,6 @@ def hg_propagate_split_on_gpu(new_g, tgt_type, num_hops, max_hops, extra_metapat
     for key in list(out_embedding.keys()):
         new_g.nodes[ntype].data[key] = out_embedding[key]
 
-
-
-
-
     return new_g
 
 def sp_normalize(mx):
@@ -265,15 +246,11 @@ def propagate_self_value(g,target_node = 'P',max_hop = 1):
                         else:
                             out_dict[new_str].append(0.0)
                         
-
-
         new_out_dict = {}
         for key in out_dict.keys():
             new_out_dict[key] = torch.tensor(out_dict[key])
 
-
     return new_out_dict
-
 
 
 def propagate_self_value_parallel(g,target_node = 'P',max_hop = 1,parallel_num = 10):
@@ -288,10 +265,8 @@ def propagate_self_value_parallel(g,target_node = 'P',max_hop = 1,parallel_num =
         sparse_csr = sp_normalize(sparse_csr)
         my_adjs[etype] = sparse_csr
         in_links[etype[0]].append(etype)
-
         
     total_node_num = g.nodes[target_node].data[target_node].shape[0]
-
     
     def the_func(index,out_name=False):
         my_name = []
@@ -356,7 +331,6 @@ def propagate_self_value_gpu_parallel(g,target_node = 'P',max_hop = 1,parallel_n
         my_adjs[etype] = sparse_coo
         in_links[etype[0]].append(etype)
 
-        
     total_node_num = g.nodes[target_node].data[target_node].shape[0]
 
     out_dict = defaultdict(list)
@@ -391,30 +365,12 @@ def propagate_self_value_gpu_parallel(g,target_node = 'P',max_hop = 1,parallel_n
                         get = [new_coo[get_index].item() for get_index in index_list]
                         out_dict[new_str].extend(get)
 
-
-
-
         new_out_dict = {}
         for key in out_dict.keys():
             new_out_dict[key] = torch.tensor(out_dict[key])
 
 
     return new_out_dict
-
-
-
-
-
-
-    
-
-
-    
-
-
-
-
-
 
 
 def clear_hg(new_g, echo=False):
@@ -648,8 +604,7 @@ def train_multi_stage(model, train_loader, enhance_loader, loss_fcn, optimizer, 
     return loss, approx_acc
 
 
-
-def train_search_new(model, train_loader, loss_fcn, optimizer_w, optimizer_a, val_loader, epoch_sampled, evaluator, device,
+def train_search(model, train_loader, loss_fcn, optimizer_w, optimizer_a, val_loader, epoch_sampled, evaluator, device,
           feats, label_feats, labels_cuda, label_emb, mask=None, scalar=None):
     model.train()
     total_loss = 0
@@ -727,9 +682,6 @@ def train_search_new(model, train_loader, loss_fcn, optimizer_w, optimizer_a, va
     return loss_train, loss_val, acc_train, acc_val
 
 
-
-
-
 @torch.no_grad()
 def gen_output_torch(model, feats, label_feats, label_emb, test_loader, device):
     model.eval()
@@ -741,7 +693,6 @@ def gen_output_torch(model, feats, label_feats, label_emb, test_loader, device):
         preds.append(model(batch_feats, batch_labels_feats,batch_label_emb).cpu())
     preds = torch.cat(preds, dim=0)
     return preds
-
 
 
 def gen_output_torch_search(model, feats, label_feats, label_emb, test_loader, device, idx):
@@ -756,8 +707,6 @@ def gen_output_torch_search(model, feats, label_feats, label_emb, test_loader, d
     return preds
 
 
-
-
 def get_ogb_evaluator(dataset):
     evaluator = Evaluator(name=dataset)
     return lambda preds, labels: evaluator.eval({
@@ -767,90 +716,17 @@ def get_ogb_evaluator(dataset):
 
 
 def load_dataset(args):
-    if args.dataset == 'ogbn-products':
-        # num_nodes=2449029, num_edges=123718280, num_feats=100, num_classes=47
-        # train/val/test 196615/39323/2213091
-        return load_homo(args)
-    elif args.dataset == 'ogbn-proteins':
-        # num_nodes=132534, num_edges=79122504, num_feats=8, 112 binary classification tasks, num_classes=2
-        # train/val/test 86619/21236/24679
-        return load_homo(args)
-    elif args.dataset == 'ogbn-arxiv':
-        # num_nodes=169343, num_edges=1166243, num_feats=128, num_classes=40
-        # train/val/test 90941/29799/48603
-        return load_homo(args)
-    elif args.dataset == 'ogbn-papers100M':
-        # num_nodes=111059956, num_edges=1615685872, num_feats=128, num_classes=172
-        # train/val/test/extra 1207179/125265/214338/98.61%
-        return load_homo(args)
-    elif args.dataset == 'ogbn-mag':
+    if args.dataset == 'ogbn-mag':
         # train/val/test 629571/64879/41939
         return load_mag(args)
     else:
-        assert 0, 'Only allowed [ogbn-products, ogbn-proteins, ogbn-arxiv, ogbn-papers100M, ogbn-mag]'
-
-
-def load_homo(args):
-    dataset = DglNodePropPredDataset(name=args.dataset, root=args.root)
-    splitted_idx = dataset.get_idx_split()
-
-    g, init_labels = dataset[0]
-    splitted_idx = dataset.get_idx_split()
-    train_nid = splitted_idx['train']
-    val_nid = splitted_idx['valid']
-    test_nid = splitted_idx['test']
-
-    # features = g.ndata['feat'].float()
-    init_labels = init_labels.squeeze()
-    n_classes = dataset.num_classes
-    evaluator = get_ogb_evaluator(args.dataset)
-
-    diag_name = f'{args.dataset}_diag.pt'
-    if not os.path.exists(diag_name):
-        src, dst, eid = g._graph.edges(0)
-        m = SparseTensor(row=dst, col=src, sparse_sizes=(g.num_nodes(), g.num_nodes()))
-
-        if args.dataset in ['ogbn-proteins', 'ogbn-products']:
-            if args.dataset == 'ogbn-products':
-                m = remove_diag(m)
-            assert torch.all(m.get_diag() == 0)
-            mm_diag = sparse_tools.spspmm_diag_sym_AAA(m, num_threads=16)
-            tic = datetime.datetime.now()
-            mmm_diag = sparse_tools.spspmm_diag_sym_AAAA(m, num_threads=28)
-            toc = datetime.datetime.now()
-            torch.save([mm_diag, mmm_diag], diag_name)
-        else:
-            assert torch.all(m.get_diag() == 0)
-            t = m.t()
-            mm_diag = sparse_tools.spspmm_diag_ABA(m, m, num_threads=16)
-            mt_diag = sparse_tools.spspmm_diag_ABA(m, t, num_threads=16)
-            tm_diag = sparse_tools.spspmm_diag_ABA(t, m, num_threads=28)
-            tt_diag = sparse_tools.spspmm_diag_ABA(t, t, num_threads=28)
-            torch.save([mm_diag, mt_diag, tm_diag, tt_diag], diag_name)
-
-    if args.dataset in ['ogbn-arxiv', 'ogbn-papers100M']:
-        src, dst, eid = g._graph.edges(0)
-
-        new_edges = {}
-        new_edges[('P', 'cite', 'P')] = (src, dst)
-        new_edges[('P', 'cited_by', 'P')] = (dst, src)
-
-        new_g = dgl.heterograph(new_edges, {'P': g.num_nodes()})
-        new_g.nodes['P'].data['P'] = g.ndata.pop('feat')
-        g = new_g
-
-    return g, init_labels, g.num_nodes(), n_classes, train_nid, val_nid, test_nid, evaluator
+        assert 0, 'Only allowed [ogbn-mag]'
 
 
 def degree_limit(edge_node,max_degree):
     from collections import Counter
     edge_node_list = edge_node.cpu().tolist()
     node_Counter = Counter(edge_node_list)
-
-    # import pdb
-    # pdb.set_trace()
-    # print("max_deg:", max(node_Counter.values()))
-
     out_Counter = {}
     for key in node_Counter.keys():
         if node_Counter[key] > max_degree:
@@ -866,10 +742,7 @@ def degree_limit(edge_node,max_degree):
                 out_mask[index] = True
                 out_Counter[key] -= 1
 
-
     return out_mask
-
-
 
 
 def load_mag(args, symmetric=True):
@@ -922,32 +795,6 @@ def load_mag(args, symmetric=True):
 
     for i, etype in enumerate(g.etypes):
         src, dst, eid = g._graph.edges(i)
-        # edge_mask_ratio = 0.1
-        # if args.max_mask_deg is not None:
-        # # if edge_mask_ratio != 0:
-        #     from collections import Counter
-        # src_list,dst_list = src.cpu().tolist(),dst.cpu().tolist()
-        # from collections import Counter
-        # src_Counter = Counter(src_list)
-        # dst_Counter = Counter(dst_list)
-        #     src_Counter = set([key for key in src_Counter.keys() if src_Counter[key] <= args.max_mask_deg])
-        #     dst_Counter = set([key for key in dst_Counter.keys() if dst_Counter[key] <= args.max_mask_deg])
-
-        #     print(len(src_list), len(src_Counter), len(dst_list), len(dst_Counter))
-
-        #     edge_keep = torch.zeros(src.shape).bool()
-
-        #     # single_edge = torch.zeros(src.shape) == 0.0
-        #     for index in range(len(src_list)):
-        #         if src_list[index] in src_Counter or dst_list[index] in dst_Counter:
-        #             # single_edge[index] = False
-        #             edge_keep[index] = True
-
-        #     # edge_mask = torch.zeros(src.shape) != 0.0
-        #     # mid_mask = torch.rand((single_edge.sum().item()), generator=generator) < edge_mask_ratio
-        #     # edge_mask[single_edge] = True # mid_mask
-
-        #     # edge_mask = ~edge_mask
         edge_keep = None
 
         if out_max_degree is not None and out_max_degree > 0:

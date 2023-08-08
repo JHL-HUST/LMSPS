@@ -2,34 +2,36 @@ import os
 import gc
 import time
 import uuid
+import math
 import argparse
 import datetime
-import numpy as np
+
 
 
 import torch
 import torch.nn.functional as F
 
-from model_search import *
+from model import *
 from utils import *
-
 
 def main(args):
     if args.seed > 0:
         set_random_seed(args.seed)
+    device = "cuda:{}".format(args.gpu) if not args.cpu else 'cpu'
     g, init_labels, num_nodes, n_classes, train_nid, val_nid, test_nid, evaluator = load_dataset(args)
-
-    # if args.label_feats:
-    #     p = f"hop{args.num_label_hops}_diag.pt"
-    #     if os.path.exists(p):
-    #         self_value_dict = torch.load(p)
-    #     else:
-    #         self_value_dict = propagate_self_value_parallel(g,'P',args.num_label_hops)
-    #         torch.save(self_value_dict, p)
-    #     print(self_value_dict)
-    # else:
-    #     self_value_dict = None
-
+    
+    if args.label_feats:
+        p = f"ogbn-mag_hop{args.num_label_hops}_total_float.pt"
+        if os.path.exists(p):
+            self_value_dict = torch.load(p)
+        else:
+            print(args.num_label_hops)
+            self_value_dict = propagate_self_value_gpu_parallel(g,'P',max_hop=args.num_label_hops, device=device)
+            torch.save(self_value_dict, p)
+        print(self_value_dict)
+    else:
+        self_value_dict = None
+    
 
     # =======
     # rearange node idx (for feats & labels)
@@ -63,34 +65,8 @@ def main(args):
     # features propagate alongside the metapath
     # =======
     prop_tic = datetime.datetime.now()
-    if args.dataset in ['ogbn-proteins', 'ogbn-products']: # homogeneous
-        tgt_type = 'hop_0'
 
-        g.ndata['hop_0'] = g.ndata.pop('feat')
-        for hop in range(args.num_hops):
-            g.update_all(fn.copy_u(f'hop_{hop}', 'm'), fn.mean('m', f'hop_{hop+1}'))
-        keys = list(g.ndata.keys())
-        print(f'Involved feat keys {keys}')
-        feats = {k: g.ndata.pop(k) for k in keys}
-
-    elif args.dataset in ['ogbn-arxiv', 'ogbn-papers100M']: # single-node-type & double-edge-types
-        tgt_type = 'P'
-
-        for hop in range(1, args.num_hops + 1):
-            for k in list(g.ndata.keys()):
-                if len(k) == hop:
-                    g['cite'].update_all(
-                        fn.copy_u(k, 'msg'),
-                        fn.mean('msg', f'm{k}'), etype='cite')
-                    g['cited_by'].update_all(
-                        fn.copy_u(k, 'msg'),
-                        fn.mean('msg', f't{k}'), etype='cited_by')
-
-        keys = list(g.ndata.keys())
-        print(f'Involved feat keys {keys}')
-        feats = {k: g.ndata.pop(k) for k in keys}
-
-    elif args.dataset == 'ogbn-mag': # multi-node-types & multi-edge-types
+    if args.dataset == 'ogbn-mag': # multi-node-types & multi-edge-types
         tgt_type = 'P'
 
         extra_metapath = [] # ['AIAP', 'PAIAP']
@@ -152,7 +128,7 @@ def main(args):
     labels_cuda = labels.long().to(device)
 
     checkpt_file = checkpt_folder + uuid.uuid4().hex
-    print(checkpt_file)
+    print(f"check_file: {checkpt_file}")
 
     for stage in range(args.start_stage, len(args.stages)):
         epochs = args.stages[stage]
@@ -212,109 +188,39 @@ def main(args):
                 label_onehot = torch.zeros((num_nodes, n_classes))
             label_onehot[train_nid] = F.one_hot(init_labels[train_nid], n_classes).float()
 
-            if args.dataset in ['ogbn-proteins', 'ogbn-products']: # homogeneous
-                g.ndata['s'] = label_onehot
-                for hop in range(args.num_label_hops):
-                    g.update_all(fn.copy_u('m'*hop+'s', 'msg'), fn.mean('msg', 'm'*(hop+1)+'s'))
-                keys = [k[:-1] for k in g.ndata.keys() if k != 's']
-                print(f'Involved label keys {keys}')
-                label_feats = {k: g.ndata.pop(k+'s') for k in keys}
-                g = clear_hg(g, echo=False)
+            # if args.dataset == 'ogbn-mag':
+            g.nodes['P'].data['P'] = label_onehot
 
-                # remove self effect on label feats
-                mm_diag, mmm_diag = torch.load(f'{args.dataset}_diag.pt')
-                diag_values = {'mm': mm_diag, 'mmm': mmm_diag}
-                for k in diag_values:
-                    if k in label_feats:
-                        label_feats[k] = label_feats[k] - diag_values[k].unsqueeze(-1) * label_onehot
-                        assert torch.all(label_feats[k] > -1e-6)
-                        print(k, torch.sum(label_feats[k] < 0), label_feats[k].min())
+            extra_metapath = [] # ['PAIAP']
+            extra_metapath = [ele for ele in extra_metapath if len(ele) > args.num_label_hops + 1]
 
-                condition = lambda ra,rb,rc,k: True
-                check_acc(label_feats, condition, init_labels, train_nid, val_nid, test_nid)
+            print(f'Current num label hops = {args.num_label_hops}')
+            if len(extra_metapath):
+                max_hops = max(args.num_label_hops + 1, max([len(ele) for ele in extra_metapath]))
+            else:
+                max_hops = args.num_label_hops + 1
 
-                label_emb = label_feats['mmmmmmmmm']
-                # label_emb = (label_feats['m'] + label_feats['mm'] + label_feats['mmm']) / 3
-                check_acc({'label_emb': label_emb}, condition, init_labels, train_nid, val_nid, test_nid)
+            g = hg_propagate(g, tgt_type, args.num_label_hops, max_hops, extra_metapath, echo=False)
 
-            elif args.dataset in ['ogbn-arxiv', 'ogbn-papers100M']: # single-node-type & double-edge-types
-                g.ndata[tgt_type] = label_onehot
+            keys = list(g.nodes[tgt_type].data.keys())
+            print(f'Involved label keys {keys}')
+            for k in keys:
+                if k == tgt_type: continue
+                label_feats[k] = g.nodes[tgt_type].data.pop(k)
+            g = clear_hg(g, echo=False)
 
-                for hop in range(1, args.num_hops + 1):
-                    for k in list(g.ndata.keys()):
-                        if len(k) == hop:
-                            g['cite'].update_all(
-                                fn.copy_u(k, 'msg'),
-                                fn.mean('msg', f'm{k}'), etype='cite')
-                            g['cited_by'].update_all(
-                                fn.copy_u(k, 'msg'),
-                                fn.mean('msg', f't{k}'), etype='cited_by')
+            for k in label_feats.keys():
+                label_feats[k] = label_feats[k] - self_value_dict[k].unsqueeze(-1) * label_onehot
+            condition = lambda ra,rb,rc,k: True
+            check_acc(label_feats, condition, init_labels, train_nid, val_nid, test_nid)
 
-                keys = list(g.ndata.keys())
-                print(f'Involved label keys {keys}')
-                for k in keys:
-                    if k == tgt_type: continue
-                    label_feats[k[:-1]] = g.ndata.pop(k)
-                g = clear_hg(g, echo=False)
+            label_emb = 0
+            for k in label_feats.keys():
+                label_emb = label_emb + label_feats[k] / len(label_feats.keys())
 
-                condition = lambda ra,rb,rc,k: True
-                check_acc(label_feats, condition, init_labels, train_nid, val_nid, test_nid)
+            # label_emb = (label_feats['PPP'] + label_feats['PAP'] + label_feats['PP'] + label_feats['PFP']) / 4
+            check_acc({'label_emb': label_emb}, condition, init_labels, train_nid, val_nid, test_nid)
 
-                # remove self effect on label feats
-                mm_diag, mt_diag, tm_diag, tt_diag = torch.load(f'{args.dataset}_diag.pt')
-                diag_values = {'mm': mm_diag, 'mt': mt_diag, 'tm': tm_diag, 'tt': tt_diag}
-                for k in diag_values:
-                    if k in label_feats:
-                        label_feats[k] = label_feats[k] - diag_values[k].unsqueeze(-1) * label_onehot
-                        assert torch.all(label_feats[k] > -1e-6)
-                        print(k, torch.sum(label_feats[k] < 0), label_feats[k].min())
-
-                condition = lambda ra,rb,rc,k: True
-                check_acc(label_feats, condition, init_labels, train_nid, val_nid, test_nid)
-
-                label_emb = (label_feats['t'] + label_feats['tm'] + label_feats['mt'] + label_feats['tt']) / 4
-                check_acc({'label_emb': label_emb}, condition, init_labels, train_nid, val_nid, test_nid)
-
-            elif args.dataset == 'ogbn-mag':
-                g.nodes['P'].data['P'] = label_onehot
-
-                extra_metapath = [] # ['PAIAP']
-                extra_metapath = [ele for ele in extra_metapath if len(ele) > args.num_label_hops + 1]
-
-                print(f'Current num label hops = {args.num_label_hops}')
-                if len(extra_metapath):
-                    max_hops = max(args.num_label_hops + 1, max([len(ele) for ele in extra_metapath]))
-                else:
-                    max_hops = args.num_label_hops + 1
-
-                g = hg_propagate(g, tgt_type, args.num_label_hops, max_hops, extra_metapath, echo=False)
-
-                keys = list(g.nodes[tgt_type].data.keys())
-                print(f'Involved label keys {keys}')
-                for k in keys:
-                    if k == tgt_type: continue
-                    label_feats[k] = g.nodes[tgt_type].data.pop(k)
-                g = clear_hg(g, echo=False)
-
-                # label_feats = remove_self_effect_on_label_feats(label_feats, label_onehot)
-                # for k in label_feats.keys():
-                #     label_feats[k] = label_feats[k] - self_value_dict[k].unsqueeze(-1) * label_onehot
-
-                for k in ['PPP', 'PAP', 'PFP', 'PPPP', 'PAPP', 'PPAP', 'PFPP', 'PPFP']:
-                    if k in label_feats:
-                        diag = torch.load(f'{args.dataset}_{k}_diag.pt')
-                        label_feats[k] = label_feats[k] - diag.unsqueeze(-1) * label_onehot
-                        assert torch.all(label_feats[k] > -1e-6)
-                        print(k, torch.sum(label_feats[k] < 0), label_feats[k].min())
-
-                condition = lambda ra,rb,rc,k: True
-                check_acc(label_feats, condition, init_labels, train_nid, val_nid, test_nid)
-
-                # label_emb = 0
-                # for k in label_feats.keys():
-                #     label_emb = label_emb + label_feats[k] / len(label_feats.keys())
-                label_emb = (label_feats['PPP'] + label_feats['PAP'] + label_feats['PP'] + label_feats['PFP']) / 4
-                check_acc({'label_emb': label_emb}, condition, init_labels, train_nid, val_nid, test_nid)
         else:
             label_emb = torch.zeros((num_nodes, n_classes))
 
@@ -340,38 +246,22 @@ def main(args):
             eval_loader.append((batch_feats, batch_label_feats, batch_labels_emb))
 
         data_size = {k: v.size(-1) for k, v in feats.items()}
-
-        if args.ns_linear:
-            ns_ratio = 1 * args.num_hops / (math.e ** (0.7 * args.num_hops))
-            args.ns = math.floor((len(feats) + len(label_feats)) * ns_ratio)
-            if args.ns <= args.num_label:
-                args.ns = args.num_label + 1
         
         print(f"num sampled :{args.ns}")
             
         # =======
         # Construct network
         # =======
-        model = SeHGNN_mag(args.dataset,
-            data_size, args.embed_size,
-            args.hidden, n_classes,
-            len(feats), len(label_feats), tgt_type,
-            dropout=args.dropout,
+        model = LDMLP_Se(args.dataset,
+            data_size, args.hidden, n_classes,
+            len(feats), len(label_feats), label_feats.keys(),
+            tgt_type, dropout=args.dropout,
             input_drop=args.input_drop,
-            att_drop=args.att_drop,
             label_drop=args.label_drop,
-            n_layers_1=args.n_layers_1,
-            n_layers_2=args.n_layers_2,
-            n_layers_3=args.n_layers_3,
-            act=args.act, device=device,
+            device=device,
             residual=args.residual,
-            bns=args.bns,
-            label_bns=args.label_bns,
-            identity=args.identity,
-            num_sampled=args.ns,
-            num_label=args.num_label,
-            # label_residual=stage > 0,
-            )
+            label_residual=args.label_residual,
+            num_sampled=args.ns)
         model = model.to(device)
         if stage == args.start_stage:
             print(model)
@@ -389,6 +279,8 @@ def main(args):
         best_test_acc = 0
         count = 0
 
+        sample_results = []
+
         for epoch in range(epochs):
             gc.collect()
             torch.cuda.empty_cache()
@@ -400,25 +292,18 @@ def main(args):
                 loss_w, loss_a, acc_w, acc_a  = train_multi_stage(model, train_loader, enhance_loader, loss_fcn, optimizer_w, optimizer_a, val_loader, epoch_sampled, evaluator, device, feats, label_feats, labels_cuda, label_emb, predict_prob, args.gama, scalar=scalar)
             end = time.time()
 
-            print(f"\nepoch {epoch} sample\n")
-
             if args.all_path:
-                paths_top, paths, idx = model.sample(list(feats.keys()), list(label_feats.keys()), args.ratio, args.topn, args.all_path)
-                print(f"paths top {paths_top}\n")
+                paths, idx = model.sample(list(feats.keys()), list(label_feats.keys()), args.ratio, args.topn, args.all_path)
+                # print(f"paths top {paths_top}\n")
             
             else:
                 paths, idx = model.sample(list(feats.keys()), list(label_feats.keys()), args.ratio, args.topn)
             
+            print(f"\nepoch {epoch} sample\n")
             print("id_paths {}\n".format(idx))
             print("paths {}\n".format(paths))
-            # if not args.topn:
-            #     paths1, _ = model.sample(list(feats.keys()), list(label_feats.keys()), args.ratio + 0.1, args.topn)
-            #     paths2, _ = model.sample(list(feats.keys()), list(label_feats.keys()), args.ratio + 0.2, args.topn)
-            #     print("paths1 {}\n".format(paths1))
-            #     print("paths2 {}\n".format(paths2))
-            # else:
-            #     paths1, _ = model.sample(list(feats.keys()), list(label_feats.keys()), args.ratio, args.topn+10)
-            #     print("paths {}\n".format(paths1))
+
+            sample_results.append(paths)
 
             log = "Epoch {}, Time(s): {:.4f}, estimated train loss {:.4f}, acc {:.4f}\n".format(epoch, end-start, loss_w, acc_w*100)
             torch.cuda.empty_cache()
@@ -436,7 +321,7 @@ def main(args):
                             batch_feats = {k: v.to(device).float() for k,v in batch_feats.items()}
                         batch_label_feats = {k: v.to(device) for k,v in batch_label_feats.items()}
                         batch_labels_emb = batch_labels_emb.to(device)
-                        raw_preds.append(model(batch_feats, idx, batch_label_feats, batch_labels_emb).cpu())
+                        raw_preds.append(model(idx, batch_feats, batch_label_feats, batch_labels_emb).cpu())
                     raw_preds = torch.cat(raw_preds, dim=0)
 
                     loss_val = loss_fcn(raw_preds[:valid_node_nums], labels[trainval_point:valtest_point]).item()
@@ -466,16 +351,13 @@ def main(args):
 
         print("Best Epoch {}, Val {:.4f}, Test {:.4f}".format(best_epoch, best_val_acc*100, best_test_acc*100))
 
-        model.load_state_dict(torch.load(checkpt_file+f'_{stage}.pkl'))
+        print(f'\nresult:\n {sample_results[best_epoch]}')
 
-        # import code
-        # code.interact(local=locals())
-        # raw_preds = gen_output_torch_search(model, feats, label_feats, label_emb, all_loader, device, idx)
-        # torch.save(raw_preds, checkpt_file+f'_{stage}.pt')
+        model.load_state_dict(torch.load(checkpt_file+f'_{stage}.pkl'))
 
 
 def parse_args(args=None):
-    parser = argparse.ArgumentParser(description='SeHGNN')
+    parser = argparse.ArgumentParser(description='LDMLP')
     ## For environment costruction
     parser.add_argument("--seeds", nargs='+', type=int, default=[1],
                         help="the seed used in the training")
@@ -501,26 +383,14 @@ def parse_args(args=None):
     parser.add_argument("--hidden", type=int, default=512)
     parser.add_argument("--dropout", type=float, default=0,  # original 0.5
                         help="dropout on activation")
-    parser.add_argument("--n-layers-1", type=int, default=2,
-                        help="number of layers of feature projection")
-    parser.add_argument("--n-layers-2", type=int, default=2,
-                        help="number of layers of the downstream task")
-    parser.add_argument("--n-layers-3", type=int, default=4,
-                        help="number of layers of residual label connection")
     parser.add_argument("--input-drop", type=float, default=0,  # original 0.1
                         help="input dropout of input features")
-    parser.add_argument("--att-drop", type=float, default=0.,
-                        help="attention dropout of model")
     parser.add_argument("--label-drop", type=float, default=0.,
                         help="label feature dropout of model")
     parser.add_argument("--residual", action='store_true', default=False,
                         help="whether to connect the input features")
-    parser.add_argument("--act", type=str, default='relu',
-                        help="the activation function of the model")
-    parser.add_argument("--bns", action='store_true', default=False,
-                        help="whether to process the input features")
-    parser.add_argument("--label-bns", action='store_true', default=False,
-                        help="whether to process the input label features")
+    parser.add_argument("--label_residual", action='store_true', default=False,
+                        help="whether to connect the input features")
     ## for training
     parser.add_argument("--amp", action='store_true', default=False,
                         help="whether to amp to accelerate training with float16(half) calculation")
@@ -539,12 +409,9 @@ def parse_args(args=None):
     parser.add_argument("--start-stage", type=int, default=0)
     parser.add_argument("--reload", type=str, default='')
     parser.add_argument("--ns", type=int, default=1)
-    parser.add_argument("--identity", action='store_true', default=False)
     parser.add_argument("--ratio", type=float, default=0)
     parser.add_argument("--topn", type=int, default=0)
-    parser.add_argument("--num_label", type=int, default=2)
     parser.add_argument("--all_path", action='store_true', default=False)
-    parser.add_argument("--ns_linear", action='store_true', default=False)
     parser.add_argument("--split_on_gpu", action='store_true', default=False)
     parser.add_argument("--emb_half", action='store_true', default=False)
 

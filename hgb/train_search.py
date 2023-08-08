@@ -214,7 +214,7 @@ def main(args):
         # =======
         torch.cuda.empty_cache()
         gc.collect()
-        model = LHMLP_Se(args.hidden, num_classes, feats.keys(), label_feats.keys(), tgt_type,
+        model = LDMLP_Se(args.hidden, num_classes, feats.keys(), label_feats.keys(), tgt_type,
             args.dropout, args.input_drop, device, args.residual, bns=args.bns, data_size=data_size, num_sampled=args.ns)
 
         print(model)
@@ -248,9 +248,6 @@ def main(args):
 
         train_times = []
 
-        # if args.neighbor_attention or args.two_layer:
-        #     model.feats = {k: v.to(device) for k, v in raw_feats.items()}
-
         sample_results = []
 
         for epoch in tqdm(range(args.stage)):
@@ -265,10 +262,9 @@ def main(args):
             epoch_feats = {k:v for k,v in feats.items() if k in meta_path_sampled or (model.residual and k==model.tgt_key)}
             epoch_label_feats = {k:v for k,v in label_feats.items() if k in label_meta_path_sampled}
 
-
             start = time.time()
 
-            loss_w, loss_a, acc_w, acc_a = train_search_new(model, epoch_feats, epoch_label_feats, labels_cuda, loss_fcn, 
+            loss_w, loss_a, acc_w, acc_a = train_search(model, epoch_feats, epoch_label_feats, labels_cuda, loss_fcn, 
                                                             optimizer_w, optimizer_a, train_loader, val_loader,
                                                               epoch_sampled, meta_path_sampled, label_meta_path_sampled, 
                                                               evaluator, scalar=scalar)
@@ -404,7 +400,7 @@ def main(args):
 
 
 def parse_args(args=None):
-    parser = argparse.ArgumentParser(description='SeHGNN')
+    parser = argparse.ArgumentParser(description='LDMLP')
     ## For environment costruction
     parser.add_argument("--seeds", nargs='+', type=int, default=[1],
                         help="the seed used in the training")
