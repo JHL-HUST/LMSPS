@@ -1,8 +1,17 @@
 archs = {
-    "dblp_hop5_top20": [['APVPA', 'APVP', 'APTPA', 'APAPVP', 'APVPVP', 'APVPAP', 'APA', 'APAPAP', 'APAP', 'APT', 'APVPT', 'APVPV', 'APVPTP', 'APAPA', 'APTPT', 'APAPT', 'APV', 'APTP', 'APAPV', 'AP'], []],
-    "dblp_hop5_all": [['APVPA', 'APVP', 'APTPA', 'APAPVP', 'APVPVP', 'APVPAP', 'APA', 'APAPAP', 'APAP', 'APT', 'APVPT', 'APVPV', 'APVPTP', 'APAPA', 'APTPT', 'APAPT', 'APV', 'APTP', 'APAPV', 'AP', 'A', 'APTPAP', 'APTPTP', 'APTPV', 'APAPTP', 'APTPVP'], []],
-    "acm_hop5_top20": [['PPAPAP', 'PPPAPP', 'PPAPP', 'PPPPPP', 'PPAPPP', 'PPPPP', 'PP', 'PAPAPP', 'PAPP', 'PCPPA', 'PAPAPA', 'PAPPPP', 'PPCPPA', 'PPPCP', 'PPPPAP', 'PCPPAP', 'PPAPPA', 'PPAPCP', 'PCPAPP', 'PPCPPP'], []],
-    "acm_hop5_all": [['PPAPAP', 'PPPAPP', 'PPAPP', 'PPPPPP', 'PPAPPP', 'PPPPP', 'PP', 'PAPAPP', 'PAPP', 'PCPPA', 'PAPAPA', 'PAPPPP', 'PPCPPA', 'PPPCP', 'PPPPAP', 'PCPPAP', 'PPAPPA', 'PPAPCP', 'PCPAPP', 'PPCPPP', 'PAPPPA', 'PPPAPA', 'PPPPPA', 'PAPCPP', 'PAPPA', 'PCPPP', 'PPP', 'PCPPPP', 'PPPA', 'PPCPCP', 'PAPCPA', 'PCPCPP', 'PCP', 'PAPCP', 'PAPPAP', 'PPPCPP', 'PPPPCP', 'PAPAP', 'PAPPCP', 'PPCP', 'PCPCP', 'PPAP', 'PPPPPC', 'PCPAP', 'PAPPC', 'PCPPPA', 'PAPA', 'PCPA', 'PPAPC', 'PCPCPA', 'PPPPA', 'PPCPAP', 'PPAPA', 'PCPPCP', 'PCPP', 'PAPPP', 'PPCPA', 'PPCPP', 'PA', 'PPA', 'PCPAPA', 'PPPC', 'PPAPPC', 'PAPAPC', 'PPPCPA', 'PPPP', 'PPCPPC', 'PCPC', 'PPPAP', 'PAP', 'P', 'PPPCPC', 'PAPCPC', 'PPC', 'PCPCPC', 'PAPC', 'PPPAPC', 'PPPPC', 'PAPPPC', 'PCPPC', 'PPCPC', 'PCPPPC', 'PC', 'PCPAPC'], []],
-    "imdb_hop4_top20": [['MKMK', 'MKMD', 'MKMDM', 'MDMDM', 'MDMA', 'MKMKM', 'MAMD', 'MKMAM', 'MAMKM', 'MDMD', 'MDMKM', 'MKM', 'MDMK', 'MKMA', 'MK', 'MAMK', 'MA', 'MAMAM', 'M', 'MAM'], []],
-    "imdb_hop4_all": [['MKMK', 'MKMD', 'MKMDM', 'MDMDM', 'MDMA', 'MKMKM', 'MAMD', 'MKMAM', 'MAMKM', 'MDMD', 'MDMKM', 'MKM', 'MDMK', 'MKMA', 'MK', 'MAMK', 'MA', 'MAMAM', 'M', 'MAM', 'MDMAM', 'MD', 'MAMA', 'MAMDM', 'MDM'], []],
+    "dblp": [
+        ['AP', 'APT', 'APVP', 'APAPA', 'APTPA', 'APTPT', 'APTPV', 'APVPA', 'APVPV', 'APAPAP', 'APAPTP', 'APAPVP',
+         'APTPTP', 'APTPVP', 'APVPTP', 'APAPAPV', 'APAPTPA', 'APAPTPV', 'APAPVPA', 'APAPVPT', 'APAPVPV', 'APTPAPA',
+         'APTPAPT', 'APTPTPT', 'APTPVPV', 'APVPAPT', 'APVPTPA', 'APVPVPA', 'APVPVPT', 'APVPVPV'], []],
+    "imdb": [
+        ['M', 'MA', 'MK', 'MAM', 'MDM', 'MKM', 'MAMK', 'MDMK', 'MKMD', 'MDMKM', 'MKMAM', 'MKMDM', 'MKMKM', 'MAMAMK',
+         'MAMDMA', 'MAMDMK', 'MAMKMD', 'MAMKMK', 'MDMAMA', 'MDMAMD', 'MDMDMA', 'MDMDMK', 'MDMKMA', 'MKMAMA', 'MKMAMD',
+         'MKMAMK', 'MKMDMA', 'MKMDMK', 'MKMKMD', 'MKMKMK'], []],
+    "acm": [
+        ['PPP', 'PAPP', 'PCPA', 'PCPP', 'PPPC', 'PPPP', 'PAPAP', 'PAPPP', 'PCPAP', 'PCPPA', 'PPAPA', 'PPAPC', 'PPAPP',
+         'PAPAPA', 'PAPCPA', 'PAPPAP', 'PAPPCP', 'PAPPPP', 'PCPAPP', 'PCPCPP', 'PCPPAP', 'PCPPPP', 'PPAPAP', 'PPAPCP',
+         'PPAPPA', 'PPAPPP', 'PPCPAP', 'PPPAPA', 'PPPCPA', 'PPPPPP'], []],
+
+
+
 }

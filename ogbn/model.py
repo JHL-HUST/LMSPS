@@ -276,7 +276,6 @@ class LDMLP_Se(nn.Module):
                 if layer.bias is not None:
                     nn.init.zeros_(layer.bias)
 
-
     def alphas(self):
         alphas= [self.alpha]
         return alphas

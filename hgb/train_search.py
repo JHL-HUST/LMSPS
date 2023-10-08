@@ -1,5 +1,3 @@
-import os
-import gc
 import time
 import uuid
 import argparse
@@ -9,11 +7,13 @@ from tqdm import tqdm
 
 import torch
 import torch.nn.functional as F
-from torch_sparse import remove_diag
+from torch_sparse import SparseTensor
+from torch_sparse import remove_diag, set_diag
 
-from model import *
+from model_search import *
 from utils import *
 from sparse_tools import SparseAdjList
+
 
 
 def main(args):
@@ -23,7 +23,6 @@ def main(args):
     g, adjs, init_labels, num_classes, dl, train_nid, val_nid, test_nid, test_nid_full \
         = load_dataset(args)
 
-    # if not args.neighbor_attention:
     for k in adjs.keys():
         adjs[k].storage._value = None
         adjs[k].storage._value = torch.ones(adjs[k].nnz()) / adjs[k].sum(dim=-1)[adjs[k].storage.row()]
@@ -31,12 +30,15 @@ def main(args):
     # =======
     # rearange node idx (for feats & labels)
     # =======
-    train_node_nums = len(train_nid)
-    valid_node_nums = len(val_nid)
+    search_node_nums= (len(train_nid)+len(val_nid))
+    train_node_nums = search_node_nums // 2
+    valid_node_nums = search_node_nums // 2
     test_node_nums = len(test_nid)
     trainval_point = train_node_nums
     valtest_point = trainval_point + valid_node_nums
     total_num_nodes = train_node_nums + valid_node_nums + test_node_nums
+
+
     num_nodes = dl.nodes['count'][0]
 
     if total_num_nodes < num_nodes:
@@ -69,36 +71,108 @@ def main(args):
         tgt_type = 'M'
         node_types = ['M', 'A', 'D', 'K']
         extra_metapath = []
+    elif args.dataset == 'Freebase':
+        tgt_type = '0'
+        node_types = [str(i) for i in range(8)]
+        extra_metapath = []
     else:
         assert 0
     extra_metapath = [ele for ele in extra_metapath if len(ele) > args.num_hops + 1]
 
     print(f'Current num hops = {args.num_hops}')
 
-
-    prop_device = 'cpu'
+    if args.dataset == 'Freebase':
+        prop_device = 'cuda:{}'.format(args.gpu) if not args.cpu else 'cpu'
+    else:
+        prop_device = 'cpu'
     store_device = 'cpu'
+
+    if args.dataset == 'Freebase':
+        if not os.path.exists('./Freebase_adjs'):
+            os.makedirs('./Freebase_adjs')
+        num_tgt_nodes = dl.nodes['count'][0]
 
     # compute k-hop feature
     prop_tic = datetime.datetime.now()
+    if args.dataset != 'Freebase':
+        if len(extra_metapath):
+            max_length = max(args.num_hops + 1, max([len(ele) for ele in extra_metapath]))
+        else:
+            max_length = args.num_hops + 1
 
-    if len(extra_metapath):
-        max_length = max(args.num_hops + 1, max([len(ele) for ele in extra_metapath]))
+
+        g = hg_propagate_feat_dgl(g, tgt_type, args.num_hops, max_length, echo=True)
+
+
+        feats = {}
+        keys = list(g.nodes[tgt_type].data.keys())
+        print(f'For tgt {tgt_type}, feature keys {keys}')
+        for k in keys:
+            feats[k] = g.nodes[tgt_type].data.pop(k)
+
     else:
-        max_length = args.num_hops + 1
+        if len(extra_metapath):
+            max_length = max(args.num_hops + 1, max([len(ele) for ele in extra_metapath]))
+        else:
+            max_length = args.num_hops + 1
 
-    g = hg_propagate_feat_dgl(g, tgt_type, args.num_hops, max_length, echo=True)
-    # torch.save(g, f'./cache/{args.dataset}_g_prop_feat_dgl_hop{args.num_hops}.pt')
+        save_name = f'./Freebase_adjs/feat_seed{args.seed}_hop{args.num_hops}'
+        if args.seed > 0 and os.path.exists(f'{save_name}_00_int64.npy'):
+            # meta_adjs = torch.load(save_name)
+            meta_adjs = {}
+            for srcname in tqdm(dl.nodes['count'].keys()):
+                tmp = SparseAdjList(f'{save_name}_0{srcname}', None, None, num_tgt_nodes, dl.nodes['count'][srcname], with_values=True)
+                for k in tmp.keys:
+                    assert k not in meta_adjs
+                meta_adjs.update(tmp.load_adjs(expand=True))
+                del tmp
+        else:
+            meta_adjs = hg_propagate_sparse_pyg(adjs, tgt_type, args.num_hops, max_length, extra_metapath, prop_feats=True, echo=True, prop_device=prop_device)
 
-    feats = {}
-    keys = list(g.nodes[tgt_type].data.keys())
-    print(f'For tgt {tgt_type}, feature keys {keys}')
-    for k in keys:
-        feats[k] = g.nodes[tgt_type].data.pop(k)
+            meta_adj_list = []
+            for srcname in dl.nodes['count'].keys():
+                keys = [k for k in meta_adjs.keys() if k[-1] == str(srcname)]
+                tmp = SparseAdjList(f'{save_name}_0{srcname}', keys, meta_adjs, num_tgt_nodes, dl.nodes['count'][srcname], with_values=True)
+                meta_adj_list.append(tmp)
+
+            for srcname in dl.nodes['count'].keys():
+                tmp = SparseAdjList(f'{save_name}_0{srcname}', None, None, num_tgt_nodes, dl.nodes['count'][srcname], with_values=True)
+                tmp_adjs = tmp.load_adjs(expand=True)
+                print(srcname, tmp.keys)
+                for k in tmp.keys:
+                    assert torch.all(meta_adjs[k].storage.rowptr() == tmp_adjs[k].storage.rowptr())
+                    assert torch.all(meta_adjs[k].storage.col() == tmp_adjs[k].storage.col())
+                    assert torch.all(meta_adjs[k].storage.value() == tmp_adjs[k].storage.value())
+                del tmp_adjs, tmp
+                gc.collect()
+
+        feats = {k: v.clone() for k, v in meta_adjs.items() if len(k) <= args.num_hops + 1 or k in extra_metapath}
+        assert '0' not in feats
+        feats['0'] = SparseTensor.eye(dl.nodes['count'][0])
+        print(f'For tgt {tgt_type}, Involved keys {feats.keys()}')
 
     if args.dataset in ['DBLP', 'ACM', 'IMDB']:
         data_size = {k: v.size(-1) for k, v in feats.items()}
         feats = {k: v[init2sort] for k, v in feats.items()}
+    elif args.dataset == 'Freebase':
+        data_size = dict(dl.nodes['count'])
+
+        for k, v in tqdm(feats.items()):
+            if len(k) == 1:
+                continue
+
+            if k[0] == '0' and k[-1] == '0':
+
+                feats[k], _ = v.sample_adj(init2sort, -1, False) # faster, 50% time acceleration
+            elif k[0] == '0':
+
+                feats[k] = v[init2sort]
+            else:
+                assert args.two_layer, k
+                if k[-1] == tgt_type:
+                    feats[k] = v[:, init2sort]
+                else:
+                    feats[k] = v
     else:
         assert 0
     prop_toc = datetime.datetime.now()
@@ -139,7 +213,16 @@ def main(args):
                 label_onehot = torch.zeros((num_nodes, num_classes))
                 label_onehot[train_nid] = init_labels[train_nid].float()
 
-            extra_metapath = []
+            if args.dataset == 'DBLP':
+                extra_metapath = []
+            elif args.dataset == 'IMDB':
+                extra_metapath = []
+            elif args.dataset == 'ACM':
+                extra_metapath = []
+            elif args.dataset == 'Freebase':
+                extra_metapath = []
+            else:
+                assert 0
 
             extra_metapath = [ele for ele in extra_metapath if len(ele) > args.num_label_hops + 1]
             if len(extra_metapath):
@@ -150,20 +233,85 @@ def main(args):
             print(f'Current label-prop num hops = {args.num_label_hops}')
             # compute k-hop feature
             prop_tic = datetime.datetime.now()
-
-            meta_adjs = hg_propagate_sparse_pyg(
-                adjs, tgt_type, args.num_label_hops, max_length, extra_metapath, prop_feats=False, echo=True, prop_device=prop_device)
-
-            for k, v in tqdm(meta_adjs.items()):
-                label_feats[k] = remove_diag(v) @ label_onehot
-            gc.collect()
-
-            if args.dataset == 'IMDB':
-                condition = lambda ra,rb,rc,k: True
-                check_acc(label_feats, condition, init_labels, train_nid, val_nid, test_nid, show_test=False, loss_type='bce')
+            if args.dataset == 'Freebase' and args.num_label_hops <= args.num_hops and len(extra_metapath) == 0:
+                meta_adjs = {k: v for k, v in meta_adjs.items() if k[-1] == '0' and len(k) < max_length}
             else:
-                condition = lambda ra,rb,rc,k: True
-                check_acc(label_feats, condition, init_labels, train_nid, val_nid, test_nid, show_test=True)
+                if args.dataset == 'Freebase':
+                    save_name = f'./Freebase_adjs/label_seed{args.seed}_hop{args.num_label_hops}'
+                    if args.seed > 0 and os.path.exists(f'{save_name}_int64.npy'):
+                        meta_adj_list = SparseAdjList(save_name, None, None, num_tgt_nodes, num_tgt_nodes, with_values=True)
+                        meta_adjs = meta_adj_list.load_adjs(expand=True)
+                    else:
+                        meta_adjs = hg_propagate_sparse_pyg(
+                            adjs, tgt_type, args.num_label_hops, max_length, extra_metapath, prop_feats=False, echo=True, prop_device=prop_device)
+                        meta_adj_list = SparseAdjList(save_name, meta_adjs.keys(), meta_adjs, num_tgt_nodes, num_tgt_nodes, with_values=True)
+
+                        tmp = SparseAdjList(save_name, None, None, num_tgt_nodes, num_tgt_nodes, with_values=True)
+                        tmp_adjs = tmp.load_adjs(expand=True)
+                        for k in tmp.keys:
+                            assert torch.all(meta_adjs[k].storage.rowptr() == tmp_adjs[k].storage.rowptr())
+                            assert torch.all(meta_adjs[k].storage.col() == tmp_adjs[k].storage.col())
+                            assert torch.all(meta_adjs[k].storage.value() == tmp_adjs[k].storage.value())
+                        del tmp_adjs, tmp
+                        gc.collect()
+                else:
+                    # try:
+                    #     meta_adjs = torch.load(f'./cache/{args.dataset}_label_prop_hop{args.num_label_hops}.pt')
+                    # except:
+                    meta_adjs = hg_propagate_sparse_pyg(
+                        adjs, tgt_type, args.num_label_hops, max_length, extra_metapath, prop_feats=False, echo=True, prop_device=prop_device)
+                    # torch.save(meta_adjs, f'./cache/{args.dataset}_label_prop_hop{args.num_label_hops}.pt')
+
+            if args.dataset == 'Freebase':
+                if 0:
+                    label_onehot_g = label_onehot.to(prop_device)
+                    for k, v in tqdm(meta_adjs.items()):
+                        if args.dataset != 'Freebase':
+                            label_feats[k] = remove_diag(v) @ label_onehot
+                        else:
+                            label_feats[k] = (remove_diag(v).to(prop_device) @ label_onehot_g).to(store_device)
+
+                    del label_onehot_g
+                    torch.cuda.empty_cache()
+                    gc.collect()
+
+                    condition = lambda ra,rb,rc,k: rb > 0.2
+                    check_acc(label_feats, condition, init_labels, train_nid, val_nid, test_nid, show_test=False)
+
+                    left_keys = ['00', '000', '0000', '0010', '0030', '0040', '0050', '0060', '0070']
+                    remove_keys = list(set(list(label_feats.keys())) - set(left_keys))
+                    for k in remove_keys:
+                        label_feats.pop(k)
+                else:
+                    left_keys = ['00', '000', '0000', '0010', '0030', '0040', '0050', '0060', '0070']
+                    remove_keys = list(set(list(meta_adjs.keys())) - set(left_keys))
+                    for k in remove_keys:
+                        meta_adjs.pop(k)
+
+                    label_onehot_g = label_onehot.to(prop_device)
+                    for k, v in tqdm(meta_adjs.items()):
+                        if args.dataset != 'Freebase':
+                            label_feats[k] = remove_diag(v) @ label_onehot
+                        else:
+                            label_feats[k] = (remove_diag(v).to(prop_device) @ label_onehot_g).to(store_device)
+
+                    del label_onehot_g
+                    torch.cuda.empty_cache()
+                    gc.collect()
+            else:
+                for k, v in tqdm(meta_adjs.items()):
+                    if args.dataset != 'Freebase':
+                        label_feats[k] = remove_diag(v) @ label_onehot
+                    else:
+                        label_feats[k] = (remove_diag(v).to(prop_device) @ label_onehot_g).to(store_device)
+                gc.collect()
+
+                if args.dataset == 'IMDB':
+                    condition = lambda ra,rb,rc,k: True
+                    check_acc(label_feats, condition, init_labels, train_nid, val_nid, test_nid, show_test=False, loss_type='bce')
+                else:
+                    condition = lambda ra,rb,rc,k: True
+                    check_acc(label_feats, condition, init_labels, train_nid, val_nid, test_nid, show_test=True)
             print('Involved label keys', label_feats.keys())
 
             label_feats = {k: v[init2sort] for k,v in label_feats.items()}
@@ -173,13 +321,19 @@ def main(args):
         # =======
         # Train & eval loaders
         # =======
-        indices = list(range(valtest_point))
         train_loader = torch.utils.data.DataLoader(
-            torch.arange(train_node_nums), batch_size=args.batch_size, shuffle=True, drop_last=False)  # pin_memory=True
-        val_loader = torch.utils.data.DataLoader(
-            torch.arange(trainval_point, valtest_point), batch_size=args.batch_size, shuffle=True, drop_last=False)
+            torch.arange(valtest_point//2), batch_size=args.batch_size, shuffle=True, drop_last=False)
 
+        val_loader = torch.utils.data.DataLoader(
+            torch.arange(valtest_point//2, valtest_point), batch_size=args.batch_size, shuffle=True, drop_last=False)
+
+
+
+        # =======
+        # Mask & Smooth
+        # =======
         with_mask = False
+
         eval_loader, full_loader = [], []
         batchsize = 2 * args.batch_size
 
@@ -191,7 +345,11 @@ def main(args):
 
             batch_feats = {k: x[batch_start:batch_end] for k, x in feats.items()}
             batch_labels_feats = {k: x[batch_start:batch_end] for k, x in label_feats.items()}
-            batch_mask = None
+            if with_mask:
+                # batch_mask = {k: x[batch_start:batch_end] for k, x in full_mask.items()}
+                ...
+            else:
+                batch_mask = None
             eval_loader.append((batch, batch_feats, batch_labels_feats, batch_mask))
 
         for batch_idx in range((num_nodes-total_num_nodes-1) // batchsize + 1):
@@ -201,8 +359,19 @@ def main(args):
 
             batch_feats = {k: x[batch_start:batch_end] for k, x in feats.items()}
             batch_labels_feats = {k: x[batch_start:batch_end] for k, x in label_feats.items()}
-            batch_mask = None
+            if with_mask:
+                # batch_mask = {k: x[batch_start:batch_end] for k, x in full_mask.items()}
+                ...
+            else:
+                batch_mask = None
             full_loader.append((batch, batch_feats, batch_labels_feats, batch_mask))
+
+
+        if args.ns_linear:
+            ns_ratio = 2 * args.num_hops / (math.e ** (0.6 * args.num_hops))
+            if ns_ratio > 0.5:
+                ns_ratio = 0.5
+            args.ns = math.floor((len(feats) + len(label_feats)) * ns_ratio)
 
         if args.ns > (len(feats) + len(label_feats)):
             args.ns = (len(feats) + len(label_feats))
@@ -214,13 +383,18 @@ def main(args):
         # =======
         torch.cuda.empty_cache()
         gc.collect()
-        model = LDMLP_Se(args.hidden, num_classes, feats.keys(), label_feats.keys(), tgt_type,
-            args.dropout, args.input_drop, device, args.residual, bns=args.bns, data_size=data_size, num_sampled=args.ns)
+
+        print(data_size.keys(), feats.keys(), label_feats.keys())
+
+        model = LHMLP_Se(args.hidden, num_classes, feats.keys(), label_feats.keys(), tgt_type,
+            args.dropout, args.input_drop, device, args.num_final, args.residual, bns=args.bns, data_size=data_size, num_sampled=args.ns)
 
         print(model)
 
         model = model.to(device)
-        
+
+
+
         if args.seed == args.seeds[0]:
             #print(model)
             print("# Params:", get_n_params(model))
@@ -248,159 +422,59 @@ def main(args):
 
         train_times = []
 
-        sample_results = []
+
 
         for epoch in tqdm(range(args.stage)):
             gc.collect()
             torch.cuda.synchronize()
-            # keys
-            # list(label_feats.keys())
-            epoch_sampled = model.epoch_sample()
+
+
+            # determain eps for operation selection
+            eps = 1 - epoch/(args.stage - 1)
+
+            epoch_sampled = model.epoch_sample(eps)
             meta_path_sampled = [model.all_meta_path[i] for i in range(model.num_feats) if i in epoch_sampled]
             label_meta_path_sampled = [model.all_meta_path[i] for i in range(model.num_feats,model.num_paths) if i in epoch_sampled]
 
-            epoch_feats = {k:v for k,v in feats.items() if k in meta_path_sampled or (model.residual and k==model.tgt_key)}
+            epoch_feats = {k:v for k,v in feats.items() if k in meta_path_sampled or (model.residual and k==model.tgt_key)}  #
             epoch_label_feats = {k:v for k,v in label_feats.items() if k in label_meta_path_sampled}
+
 
             start = time.time()
 
-            loss_w, loss_a, acc_w, acc_a = train_search(model, epoch_feats, epoch_label_feats, labels_cuda, loss_fcn, 
+            # determain tau
+            model.set_tau(args.tau_max - (args.tau_max - args.tau_min) * epoch / (args.stage - 1))
+
+
+
+            loss_w, loss_a, acc_w, acc_a = train_search_new(model, epoch_feats, epoch_label_feats, labels_cuda, loss_fcn, 
                                                             optimizer_w, optimizer_a, train_loader, val_loader,
                                                               epoch_sampled, meta_path_sampled, label_meta_path_sampled, 
                                                               evaluator, scalar=scalar)
             torch.cuda.synchronize()
             end = time.time()
 
-            paths, idx = model.sample(list(feats.keys()), list(label_feats.keys()), args.ratio, args.topn, args.all_path)
 
-            print(f"\nepoch {epoch} sample\n")
-            print("id_paths {}\n".format(idx))
-            print("paths {}\n".format(paths))
 
-            sample_results.append(paths)
+
 
             log = "" #"Epoch {}, training Time(s): {:.4f}, estimated train loss {:.4f}, acc {:.4f}, {:.4f}\n".format(epoch, end - start,loss, acc[0]*100, acc[1]*100)
+            # print ("paths {}, label_path {}\n".format(path, label_path))
 
             torch.cuda.empty_cache()
             train_times.append(end-start)
 
-            idx = idx.cpu().tolist()
-            meta_path_sampled = [model.all_meta_path[i] for i in range(model.num_feats) if i in idx]
-            label_meta_path_sampled = [model.all_meta_path[i] for i in range(model.num_feats,model.num_paths) if i in idx]
-            if model.residual and model.tgt_key not in meta_path_sampled:
-                epoch_feats[model.tgt_key] = feats[model.tgt_key]
-
-            start = time.time()
-            with torch.no_grad():
-                model.eval()
-                raw_preds = []
-
-
-                for batch, batch_feats, batch_labels_feats, batch_mask in eval_loader:
-                    batch = batch.to(device)
-                    batch_feats = {k: x.to(device) for k, x in batch_feats.items() if k in meta_path_sampled or (model.residual and k==model.tgt_key)}
-                    batch_labels_feats = {k: x.to(device) for k, x in batch_labels_feats.items() if k in label_meta_path_sampled}
-                    if with_mask:
-                        batch_mask = {k: x.to(device) for k, x in batch_mask.items()}
-                    else:
-                        batch_mask = None
-                    raw_preds.append(model(idx, batch_feats, batch_labels_feats, meta_path_sampled, label_meta_path_sampled).cpu()) #id_paths
-
-                raw_preds = torch.cat(raw_preds, dim=0)
-                loss_train = loss_fcn(raw_preds[:trainval_point], labels[:trainval_point]).item()
-                loss_val = loss_fcn(raw_preds[trainval_point:valtest_point], labels[trainval_point:valtest_point]).item()
-                loss_test = loss_fcn(raw_preds[valtest_point:total_num_nodes], labels[valtest_point:total_num_nodes]).item()
-
-            if args.dataset != 'IMDB':
-                preds = raw_preds.argmax(dim=-1)
-            else:
-                preds = (raw_preds > 0.).int()
-
-            train_acc = evaluator(preds[:trainval_point], labels[:trainval_point])
-            val_acc = evaluator(preds[trainval_point:valtest_point], labels[trainval_point:valtest_point])
-            test_acc = evaluator(preds[valtest_point:total_num_nodes], labels[valtest_point:total_num_nodes])
-
-            end = time.time()
-            #log += f'evaluation Time: {end-start}, Train loss: {loss_train}, Val loss: {loss_val}, Test loss: {loss_test}\n'
-            log += f'Val loss: {loss_val}, Test loss: {loss_test}\n'
-            log += 'Train acc: ({:.4f}, {:.4f}), Val acc: ({:.4f}, {:.4f}), Test acc: ({:.4f}, {:.4f}) ({})\n'.format(
-                train_acc[0]*100, train_acc[1]*100, val_acc[0]*100, val_acc[1]*100, test_acc[0]*100, test_acc[1]*100, total_num_nodes-valtest_point)
-
-            if loss_val <= best_val_loss:
-                best_epoch = epoch
-                best_val_loss = loss_val
-                best_test_loss = loss_test
-                best_val = val_acc
-                best_test = test_acc
-
-                best_pred = raw_preds
-                torch.save(model.state_dict(), f'{checkpt_file}.pkl')
-
-                if epoch - best_epoch > args.patience: break
-
-            if epoch > 0 and epoch % 10 == 0: 
-                log = log + f'\tCurrent best at epoch {best_epoch} with Val loss {best_val_loss:.4f} ({best_val[0]*100:.4f}, {best_val[1]*100:.4f})' \
-                    + f', Test loss {best_test_loss:.4f} ({best_test[0]*100:.4f}, {best_test[1]*100:.4f})'
-            #print(log)
-
+        ##################direct evaluation##############
+        # logging.info('Using valid loss crit for arch selection...')
+        # model_new._initialize_flags()
+        geno_out_vloss = project_op(list(feats.keys()), model, loss_fcn, eval_loader, device, trainval_point, valtest_point, labels, args.repeat)
+        # return geno_out_vloss
         print('average train times', sum(train_times) / len(train_times))
-
-        print(f'Best Epoch {best_epoch} at {checkpt_file.split("/")[-1]}\n\tFinal Val loss {best_val_loss:.4f} ({best_val[0]*100:.4f}, {best_val[1]*100:.4f})'
-            + f', Test loss {best_test_loss:.4f} ({best_test[0]*100:.4f}, {best_test[1]*100:.4f})')
-
-        if len(full_loader):
-            model.load_state_dict(torch.load(f'{checkpt_file}.pkl', map_location='cpu'), strict=True)
-            torch.cuda.empty_cache()
-            with torch.no_grad():
-                model.eval()
-                raw_preds = []
-
-                for batch, batch_feats, batch_labels_feats, batch_mask in full_loader:
-                    batch = batch.to(device)
-                    batch_feats = {k: x.to(device) for k, x in batch_feats.items()}
-                    batch_labels_feats = {k: x.to(device) for k, x in batch_labels_feats.items()}
-                    if with_mask:
-                        batch_mask = {k: x.to(device) for k, x in batch_mask.items()}
-                    else:
-                        batch_mask = None
-                    raw_preds.append(model(idx, batch_feats, batch_labels_feats, meta_path_sampled, label_meta_path_sampled).cpu()) #id_paths
-
-                raw_preds = torch.cat(raw_preds, dim=0)
-            best_pred = torch.cat((best_pred, raw_preds), dim=0)
-
-        #torch.save(best_pred, f'{checkpt_file}.pt')
-
-        if args.dataset != 'IMDB':
-            predict_prob = best_pred.softmax(dim=1)
-        else:
-            predict_prob = torch.sigmoid(best_pred)
-
-        test_logits = predict_prob[sort2init][test_nid_full]
-        if args.dataset != 'IMDB':
-            pred = test_logits.cpu().numpy().argmax(axis=1)
-            dl.gen_file_for_evaluate(test_idx=test_nid_full, label=pred, file_path=f"./output/{args.dataset}_{args.seed}_{checkpt_file.split('/')[-1]}.txt")
-        else:
-            pred = (test_logits.cpu().numpy()>0.5).astype(int)
-            dl.gen_file_for_evaluate(test_idx=test_nid_full, label=pred, file_path=f"./output/{args.dataset}_{args.seed}_{checkpt_file.split('/')[-1]}.txt", mode='multi')
-
-    if args.dataset != 'IMDB':
-        preds = predict_prob.argmax(dim=1, keepdim=True)
-    else:
-        preds = (predict_prob > 0.5).int()
-    train_acc = evaluator(labels[:trainval_point], preds[:trainval_point])
-    val_acc = evaluator(labels[trainval_point:valtest_point], preds[trainval_point:valtest_point])
-    test_acc = evaluator(labels[valtest_point:total_num_nodes], preds[valtest_point:total_num_nodes])
-
-    print(f'train_acc ({train_acc[0]*100:.2f}, {train_acc[1]*100:.2f}) ' \
-        + f'val_acc ({val_acc[0]*100:.2f}, {val_acc[1]*100:.2f}) ' \
-        + f'test_acc ({test_acc[0]*100:.2f}, {test_acc[1]*100:.2f})')
-    print(checkpt_file.split('/')[-1])
-
-    print(f'\nresult:\n {sample_results[best_epoch]}')
+        print("paths {}\n".format(geno_out_vloss))
 
 
 def parse_args(args=None):
-    parser = argparse.ArgumentParser(description='LDMLP')
+    parser = argparse.ArgumentParser(description='SeHGNN')
     ## For environment costruction
     parser.add_argument("--seeds", nargs='+', type=int, default=[1],
                         help="the seed used in the training")
@@ -429,32 +503,44 @@ def parse_args(args=None):
     parser.add_argument("--amp", action='store_true', default=False,
                         help="whether to amp to accelerate training with float16(half) calculation")
     parser.add_argument("--lr", type=float, default=0.001)
-    parser.add_argument("--alr", type=float, default=3e-4)
+    parser.add_argument("--alr", type=float, default=1e-3)
     parser.add_argument("--weight-decay", type=float, default=0)
     parser.add_argument("--eval-every", type=int, default=1)
     parser.add_argument("--batch-size", type=int, default=10000)
     parser.add_argument("--patience", type=int, default=100,
                         help="early stop of times of the experiment")
-
+    parser.add_argument("--drop-metapath", type=float, default=0,
+                        help="whether to process the input features")
+    ## for ablation
+    parser.add_argument("--nh", type=int, default=1)
     parser.add_argument("--ns", type=int, default=1)
     parser.add_argument("--ratio", type=float, default=0)
+    parser.add_argument("--dy", action='store_true', default=False)
+    parser.add_argument("--no_path", nargs='+', type=str, default=[])
+    parser.add_argument("--no_label", nargs='+', type=str, default=[])
     parser.add_argument("--identity", action='store_true', default=False)
     parser.add_argument("--topn", type=int, default=0)
     parser.add_argument("--all_path", action='store_true', default=False)
-
+    parser.add_argument("--ns_linear", action='store_true', default=False)
+    parser.add_argument('--tau_max', type=float, default=8, help='for gumbel softmax search gradient max value')
+    parser.add_argument('--tau_min', type=float, default=4, help='for gumbel softmax search gradient min value')
+    parser.add_argument("--edge_mask_ratio", type=float, default=0.0)
+    parser.add_argument("--repeat", type=int, default=10)
+    parser.add_argument("--num_final", type=int, default=60)
+    parser.add_argument("--ACM_keep_F", action='store_true', default=False,
+                        help="whether to use Field type")
 
     return parser.parse_args(args)
 
 if __name__ == '__main__':
     args = parse_args()
 
-    if args.dataset == 'ACM':
-        args.ACM_keep_F = False
-
     args.seed = args.seeds[0]
     print(args)
+
 
     for seed in args.seeds:
         args.seed = seed
         print('Restart with seed =', seed)
         main(args)
+

@@ -1,4 +1,4 @@
 archs = {
-    "ogbn-mag_hop4_label_top30": [['PPPF', 'PAPF', 'PF', 'PFPF', 'PPPAP', 'PPPPF', 'PAPP', 'PAIAP', 'PP', 'PAPPF', 'PPPP', 'PFPPF', 'PAPPP', 'PPPPP', 'PAP', 'PPP', 'PPPFP', 'PPAP'], ['PPP', 'PAPPP', 'PPPAP', 'PPPPP', 'PAP', 'PPPP', 'PAPAP', 'PAPP', 'PPAP', 'PAIAP', 'PP', 'PPFP']],
-    "ogbn-mag_hop4_label_all": [['PPPF', 'PAPF', 'PF', 'PFPF', 'PPPAP', 'PPPPF', 'PAPP', 'PAIAP', 'PP', 'PAPPF', 'PPPP', 'PFPPF', 'PAPPP', 'PPPPP', 'PAP', 'PPP', 'PPPFP', 'PPAP', 'PAPFP', 'PPFP', 'PPAPP', 'PFPAI', 'PAPAP', 'PFPAP', 'PAIAI', 'PPFPP', 'PAPA', 'PA', 'PAI', 'PFPPP', 'PPF', 'PAPAI', 'PFP', 'PPAI', 'PPA', 'PFPP', 'PPAIA', 'PPAPF', 'PFPFP', 'PPFPA', 'PPPAI', 'PPPPA', 'PPFPF', 'PPAPA', 'PAIA', 'PAPPA', 'PPPA', 'P', 'PFPPA', 'PFPA'], ['PPP', 'PAPPP', 'PPPAP', 'PPPPP', 'PAP', 'PPPP', 'PAPAP', 'PAPP', 'PPAP', 'PAIAP', 'PP', 'PPFP', 'PFPPP', 'PPAPP', 'PFP', 'PFPAP', 'PAPFP', 'PPPFP', 'PFPP', 'PPFPP', 'PFPFP']]
-}
+    "ogbn_withLabel": [['PF', 'PAPP', 'PFPF', 'PPPF', 'PAIAP', 'PAPFP', 'PFPPP', 'PPAPF', 'PAIAPF', 'PAIAPP', 'PAPAPF', 'PAPPPF', 'PFPPAP', 'PFPPPF', 'PPAPPF', 'PAIAPAP', 'PAPAPPP', 'PAPPPAP', 'PFPPPPP', 'PPAPPPF', 'PPPAPAP', 'PPPAPPF', 'PPPPAPF'], ['PP', 'PAP', 'PPAP', 'PPPP', 'PAIAP', 'PFPAP', 'PPAPP']],
+    "ogbn_withoutLabel": [['PF', 'PAPF', 'PFPP', 'PAPPP', 'PFPFP', 'PPAPP', 'PPPAP', 'PPPFP', 'PAIAPP', 'PAPAPF', 'PFPAPF', 'PFPPPF', 'PFPPPP', 'PPAPPF', 'PPPAPF', 'PPPPAP', 'PPPPPF', 'PAIAPAP', 'PAPAPAP', 'PAPAPPP', 'PAPPPAI', 'PAPPPPF', 'PAPPPPP', 'PFPAPAP', 'PFPPFPF', 'PFPPPPF', 'PPAPAPF', 'PPAPAPP', 'PPPAIAI', 'PPPAPPP'], []],
+    }

@@ -120,9 +120,7 @@ def main(args):
     print(f'Time used for feat prop {prop_toc - prop_tic}')
     gc.collect()
 
-    # train_loader = torch.utils.data.DataLoader(
-    #     torch.arange(train_node_nums), batch_size=args.batch_size, shuffle=True, drop_last=False)
-    # eval_loader = full_loader = []
+
     all_loader = torch.utils.data.DataLoader(
         torch.arange(num_nodes), batch_size=args.batch_size, shuffle=False, drop_last=False)
 
@@ -339,10 +337,6 @@ def main(args):
         data_size = {k: v.size(-1) for k, v in feats.items()}
 
 
-        # label_feats = {} when stage = 0
-        # if stage == 1:
-        #     import code
-        #     code.interact(local=locals())
 
         # =======
         # Construct network
@@ -414,7 +408,7 @@ def main(args):
                     test_acc = evaluator(preds[valid_node_nums:valid_node_nums+test_node_nums], labels[valtest_point:total_num_nodes])
 
                     end = time.time()
-                    log += f'Time: {end-start}, Val loss: {loss_val}, Test loss: {loss_test}\n'
+                    log += f'Evaluation Time: {end-start}, Val loss: {loss_val}, Test loss: {loss_test}\n'
                     log += 'Val acc: {:.4f}, Test acc: {:.4f}\n'.format(val_acc*100, test_acc*100)
 
                 if val_acc > best_val_acc:
@@ -435,13 +429,9 @@ def main(args):
         print("Best Epoch {}, Val {:.4f}, Test {:.4f}".format(best_epoch, best_val_acc*100, best_test_acc*100))
 
         model.load_state_dict(torch.load(checkpt_file+f'_{stage}.pkl'))
-        # import code
-        # code.interact(local=locals())
+
         raw_preds = gen_output_torch(model, feats, label_feats, label_emb, all_loader, device)
 
-        #raw_preds = gen_output_torch_search(model, feats, label_feats, label_emb, all_loader, device, [2,1])
-
-        torch.save(raw_preds, checkpt_file+f'_{stage}.pt')
 
     return [round(best_val_acc * 100, 2), round(best_test_acc * 100, 2)]
 

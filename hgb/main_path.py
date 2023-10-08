@@ -1,5 +1,3 @@
-import os
-import gc
 import time
 import uuid
 import argparse
@@ -14,7 +12,6 @@ from torch_sparse import remove_diag
 from model import *
 from utils import *
 from arch import archs
-
 
 def main(args):
     if args.seed > 0:
@@ -112,7 +109,7 @@ def main(args):
     if not os.path.exists(checkpt_folder):
         os.makedirs(checkpt_folder)
     checkpt_file = checkpt_folder + uuid.uuid4().hex
-    #print('checkpt_file', checkpt_file)
+
 
     if args.amp:
         scalar = torch.cuda.amp.GradScaler()
@@ -418,18 +415,19 @@ def parse_args(args=None):
     parser.add_argument("--batch-size", type=int, default=10000)
     parser.add_argument("--patience", type=int, default=100,
                         help="early stop of times of the experiment")
-    
+    parser.add_argument("--edge_mask_ratio", type=float, default=0)
     parser.add_argument('--arch', type=str, default='DBLP')
     parser.add_argument("--eps", type=float, default=0)   #1e-12
-
+    parser.add_argument("--ACM_keep_F", action='store_true', default=False,
+                        help="whether to use Field type")
 
     return parser.parse_args(args)
 
 if __name__ == '__main__':
     args = parse_args()
 
-    if args.dataset == 'ACM':
-        args.ACM_keep_F = False
+    # if args.dataset == 'ACM':
+    #     args.ACM_keep_F = False
 
     args.seed = args.seeds[0]
     print(args)

@@ -124,7 +124,6 @@ class LDMLP(nn.Module):
         self.input_drop = nn.Dropout(input_drop)  # input_drop=0.1
         self.att_drop = nn.Dropout(att_dropout)
         self.label_drop = nn.Dropout(label_drop)
-        #self.dyalpha = Dy(nfeat)
         self.reset_parameters()
         self.epsilon = torch.FloatTensor([eps]).to(device)  #1e-12
 
@@ -162,9 +161,9 @@ class LDMLP(nn.Module):
 
 
 
-        B = num_node = features[0].shape[0] #mapped_feats[self.tgt_type].shape[0] # B: 974
-        C = self.num_channels                               # C: 9
-        D = features[0].shape[1]    #mapped_feats[self.tgt_type].shape[1]            # D: 512
+        B = num_node = features[0].shape[0]
+        C = self.num_channels
+        D = features[0].shape[1]
 
         features = torch.stack(features, dim=1) # [B, C, D]
 
@@ -286,6 +285,7 @@ class LDMLP_Se(nn.Module):
         x = self.lr_output(x)
         
         return x
+
 
     def sample(self, keys, label_keys, lam, topn, all_path=False):
         length = len(self.alpha)

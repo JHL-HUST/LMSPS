@@ -15,6 +15,55 @@ from torch_sparse import SparseTensor
 from ogb.nodeproppred import DglNodePropPredDataset, Evaluator
 
 
+
+def project_op(keys, label_keys, model, criterion, eval_loader, device, trainval_point, valtest_point, valid_node_nums, labels, repeat):  #
+    compare = lambda x, y: x < y   ######################attention########################
+    crit_extrema = None
+    best_index = 0
+    best_id = 0
+    for opid in range(repeat):
+        print (opid)
+        index_sampled = model.epoch_sample(0)
+        crit = infer_eval(model, criterion, eval_loader, device, index_sampled, trainval_point, valtest_point, valid_node_nums, labels)  #weights=weights
+        print("loss {}\n".format(crit))
+        if crit_extrema is None or compare(crit, crit_extrema):
+            crit_extrema = crit
+            best_index = index_sampled
+            best_id = opid
+    print ("best_id: {}\n".format(best_id))
+    path = []
+    label_path = []
+    for i, index in enumerate(best_index):
+        if index < len(keys):
+            path.append(keys[index])
+        else:
+            label_path.append(label_keys[index - len(keys)])
+
+    return [path, label_path]
+
+
+def infer_eval(model, criterion, eval_loader, device, index_sampled, trainval_point, valtest_point, valid_node_nums, labels):
+    with torch.no_grad():
+        model.eval()
+        raw_preds = []
+        meta_path_sampled = [model.all_meta_path[i] for i in range(model.num_feats) if i in index_sampled]
+        label_meta_path_sampled = [model.all_meta_path[i] for i in range(model.num_feats,model.num_paths) if i in index_sampled]
+
+
+        for batch_feats, batch_label_feats, batch_labels_emb in eval_loader:
+            batch_feats = {k: v.to(device).float() for k, v in batch_feats.items()}
+            batch_label_feats = {k: v.to(device) for k, v in batch_label_feats.items()}
+            batch_labels_emb = batch_labels_emb.to(device)
+            raw_preds.append(model(index_sampled, batch_feats, batch_label_feats, batch_labels_emb).cpu())
+    raw_preds = torch.cat(raw_preds, dim=0)
+
+    loss_val = criterion(raw_preds[:valid_node_nums], labels[trainval_point:valtest_point]).item()
+
+    return loss_val
+
+
+
+
 def set_random_seed(seed=0):
     random.seed(seed)
     np.random.seed(seed)
@@ -209,7 +258,7 @@ def find_index(arr,target):
 
 
 def propagate_self_value(g,target_node = 'P',max_hop = 1):
-    import  scipy.sparse as sp
+    import scipy.sparse as sp
     from collections import defaultdict,deque
     from joblib import Parallel, delayed
     my_adjs = {}
@@ -220,6 +269,7 @@ def propagate_self_value(g,target_node = 'P',max_hop = 1):
         sparse_csr = sp_normalize(sparse_csr)
         my_adjs[etype] = sparse_csr
         in_links[etype[0]].append(etype)
+
 
         
     total_node_num = g.nodes[target_node].data[target_node].shape[0]
@@ -802,9 +852,7 @@ def load_mag(args, symmetric=True):
         elif in_max_degree is not None and in_max_degree > 0:
             edge_keep = degree_limit(dst,in_max_degree)
 
-        # print(len(src), edge_keep.sum())
-        # num_edgs += edge_keep.sum()
-        # pdb.set_trace()
+
         if edge_keep != None:
             src = src[edge_keep]
             dst = dst[edge_keep]

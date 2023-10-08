@@ -2,16 +2,15 @@ import os
 import gc
 import time
 import uuid
-import math
 import argparse
 import datetime
-
+import numpy as np
 
 
 import torch
 import torch.nn.functional as F
 
-from model import *
+from model_search import *
 from utils import *
 
 def main(args):
@@ -33,18 +32,18 @@ def main(args):
         self_value_dict = None
     
 
+
     # =======
     # rearange node idx (for feats & labels)
     # =======
-    train_node_nums = len(train_nid)
-    valid_node_nums = len(val_nid)
+    search_node_nums = (len(train_nid) + len(val_nid))
+    train_node_nums = search_node_nums // 2   #len(train_nid)
+    valid_node_nums = search_node_nums // 2   #len(val_nid)
     test_node_nums = len(test_nid)
     trainval_point = train_node_nums
     valtest_point = trainval_point + valid_node_nums
     total_num_nodes = len(train_nid) + len(val_nid) + len(test_nid)
 
-    # import code
-    # code.interact(local=locals())
 
     if total_num_nodes < num_nodes:
         flag = torch.ones(num_nodes, dtype=bool)
@@ -69,7 +68,7 @@ def main(args):
     if args.dataset == 'ogbn-mag': # multi-node-types & multi-edge-types
         tgt_type = 'P'
 
-        extra_metapath = [] # ['AIAP', 'PAIAP']
+        extra_metapath = []
         extra_metapath = [ele for ele in extra_metapath if len(ele) > args.num_hops + 1]
 
         print(f'Current num hops = {args.num_hops}')
@@ -104,11 +103,6 @@ def main(args):
     print(f'Time used for feat prop {prop_toc - prop_tic}')
     gc.collect()
 
-    # train_loader = torch.utils.data.DataLoader(
-    #     torch.arange(train_node_nums), batch_size=args.batch_size, shuffle=True, drop_last=False)
-    # eval_loader = full_loader = []
-
-    # indices = list(range(valtest_point))
     all_loader = torch.utils.data.DataLoader(
         torch.arange(num_nodes), batch_size=args.batch_size, shuffle=False, drop_last=False)
 
@@ -209,6 +203,7 @@ def main(args):
                 label_feats[k] = g.nodes[tgt_type].data.pop(k)
             g = clear_hg(g, echo=False)
 
+
             for k in label_feats.keys():
                 label_feats[k] = label_feats[k] - self_value_dict[k].unsqueeze(-1) * label_onehot
             condition = lambda ra,rb,rc,k: True
@@ -218,7 +213,6 @@ def main(args):
             for k in label_feats.keys():
                 label_emb = label_emb + label_feats[k] / len(label_feats.keys())
 
-            # label_emb = (label_feats['PPP'] + label_feats['PAP'] + label_feats['PP'] + label_feats['PFP']) / 4
             check_acc({'label_emb': label_emb}, condition, init_labels, train_nid, val_nid, test_nid)
 
         else:
@@ -227,8 +221,6 @@ def main(args):
         label_feats = {k: v[init2sort] for k, v in label_feats.items()}
         label_emb = label_emb[init2sort]
 
-        # if stage == 0:
-        #     label_feats = {}
 
         # =======
         # Eval loader
@@ -246,22 +238,31 @@ def main(args):
             eval_loader.append((batch_feats, batch_label_feats, batch_labels_emb))
 
         data_size = {k: v.size(-1) for k, v in feats.items()}
+
+        if args.ns_linear:
+            ns_ratio = 1 * args.num_hops / (math.e ** (0.7 * args.num_hops))
+            args.ns = math.floor((len(feats) + len(label_feats)) * ns_ratio)
+            if args.ns <= args.num_label:
+                args.ns = args.num_label + 1
         
         print(f"num sampled :{args.ns}")
             
         # =======
         # Construct network
         # =======
-        model = LDMLP_Se(args.dataset,
+        model = LHMLP_Se(args.dataset,
             data_size, args.hidden, n_classes,
-            len(feats), len(label_feats), label_feats.keys(),
+            len(feats), feats.keys(), len(label_feats), label_feats.keys(),
             tgt_type, dropout=args.dropout,
             input_drop=args.input_drop,
             label_drop=args.label_drop,
             device=device,
+            num_final=args.num_final,
             residual=args.residual,
             label_residual=args.label_residual,
-            num_sampled=args.ns)
+            num_sampled=args.ns,
+            num_label=args.num_label
+            )
         model = model.to(device)
         if stage == args.start_stage:
             print(model)
@@ -274,90 +275,35 @@ def main(args):
         optimizer_a = torch.optim.Adam(model.alphas(), lr=args.alr,
                                      weight_decay=args.weight_decay)
 
-        best_epoch = 0
-        best_val_acc = 0
-        best_test_acc = 0
-        count = 0
 
-        sample_results = []
 
         for epoch in range(epochs):
             gc.collect()
             torch.cuda.empty_cache()
+            # determain eps for operation selection
             start = time.time()
-            epoch_sampled = model.epoch_sample()
+            eps = 1 - epoch / (epochs - 1)
+            epoch_sampled = model.epoch_sample(eps, list(feats.keys()))
+            model.set_tau(args.tau_max - (args.tau_max - args.tau_min) * epoch / (epochs - 1))
             if stage == 0:
                 loss_w, loss_a, acc_w, acc_a  = train_search(model, train_loader, loss_fcn, optimizer_w, optimizer_a, val_loader, epoch_sampled, evaluator, device, feats, label_feats, labels_cuda, label_emb, scalar=scalar)
             else:
                 loss_w, loss_a, acc_w, acc_a  = train_multi_stage(model, train_loader, enhance_loader, loss_fcn, optimizer_w, optimizer_a, val_loader, epoch_sampled, evaluator, device, feats, label_feats, labels_cuda, label_emb, predict_prob, args.gama, scalar=scalar)
             end = time.time()
 
-            if args.all_path:
-                paths, idx = model.sample(list(feats.keys()), list(label_feats.keys()), args.ratio, args.topn, args.all_path)
-                # print(f"paths top {paths_top}\n")
-            
-            else:
-                paths, idx = model.sample(list(feats.keys()), list(label_feats.keys()), args.ratio, args.topn)
-            
             print(f"\nepoch {epoch} sample\n")
-            print("id_paths {}\n".format(idx))
-            print("paths {}\n".format(paths))
 
-            sample_results.append(paths)
 
-            log = "Epoch {}, Time(s): {:.4f}, estimated train loss {:.4f}, acc {:.4f}\n".format(epoch, end-start, loss_w, acc_w*100)
             torch.cuda.empty_cache()
+        geno_out_vloss = project_op(list(feats.keys()), list(label_feats.keys()), model, loss_fcn, eval_loader, device,
+                                    trainval_point,
+                                    valtest_point, valid_node_nums, labels, args.repeat)
+        print("paths {}\n".format(geno_out_vloss))
 
-            if epoch % args.eval_every == 0:
-                with torch.no_grad():
-                    model.eval()
-                    raw_preds = []
-
-                    start = time.time()
-                    for batch_feats, batch_label_feats, batch_labels_emb in eval_loader:
-                        if args.emb_half:
-                            batch_feats = {k: v.to(device).float() for k,v in batch_feats.items()}
-                        else:
-                            batch_feats = {k: v.to(device).float() for k,v in batch_feats.items()}
-                        batch_label_feats = {k: v.to(device) for k,v in batch_label_feats.items()}
-                        batch_labels_emb = batch_labels_emb.to(device)
-                        raw_preds.append(model(idx, batch_feats, batch_label_feats, batch_labels_emb).cpu())
-                    raw_preds = torch.cat(raw_preds, dim=0)
-
-                    loss_val = loss_fcn(raw_preds[:valid_node_nums], labels[trainval_point:valtest_point]).item()
-                    loss_test = loss_fcn(raw_preds[valid_node_nums:valid_node_nums+test_node_nums], labels[valtest_point:total_num_nodes]).item()
-
-                    preds = raw_preds.argmax(dim=-1)
-                    val_acc = evaluator(preds[:valid_node_nums], labels[trainval_point:valtest_point])
-                    test_acc = evaluator(preds[valid_node_nums:valid_node_nums+test_node_nums], labels[valtest_point:total_num_nodes])
-
-                    end = time.time()
-                    log += f'Time: {end-start}, Val loss: {loss_val}, Test loss: {loss_test}\n'
-                    log += 'Val acc: {:.4f}, Test acc: {:.4f}\n'.format(val_acc*100, test_acc*100)
-
-                if val_acc > best_val_acc:
-                    best_epoch = epoch
-                    best_val_acc = val_acc
-                    best_test_acc = test_acc
-
-                    torch.save(model.state_dict(), f'{checkpt_file}_{stage}.pkl')
-                    count = 0
-                else:
-                    count = count + args.eval_every
-                    if count >= args.patience:
-                        break
-                log += "Best Epoch {},Val {:.4f}, Test {:.4f}".format(best_epoch, best_val_acc*100, best_test_acc*100)
-            print(log, flush=True)
-
-        print("Best Epoch {}, Val {:.4f}, Test {:.4f}".format(best_epoch, best_val_acc*100, best_test_acc*100))
-
-        print(f'\nresult:\n {sample_results[best_epoch]}')
-
-        model.load_state_dict(torch.load(checkpt_file+f'_{stage}.pkl'))
 
 
 def parse_args(args=None):
-    parser = argparse.ArgumentParser(description='LDMLP')
+    parser = argparse.ArgumentParser(description='SeHGNN')
     ## For environment costruction
     parser.add_argument("--seeds", nargs='+', type=int, default=[1],
                         help="the seed used in the training")
@@ -411,15 +357,22 @@ def parse_args(args=None):
     parser.add_argument("--ns", type=int, default=1)
     parser.add_argument("--ratio", type=float, default=0)
     parser.add_argument("--topn", type=int, default=0)
+    parser.add_argument("--num_label", type=int, default=2)
     parser.add_argument("--all_path", action='store_true', default=False)
+    parser.add_argument("--ns_linear", action='store_true', default=False)
     parser.add_argument("--split_on_gpu", action='store_true', default=False)
     parser.add_argument("--emb_half", action='store_true', default=False)
+
 
     parser.add_argument("--edge_mask_ratio", type=float, default=0.5)
     parser.add_argument("--mask_seed", type=int, default=1)
     parser.add_argument("--max_mask_deg", type=int, default=None)
     parser.add_argument("--in_max_deg", type=int, default=None)
     parser.add_argument("--out_max_deg", type=int, default=None)
+    parser.add_argument('--tau_max', type=float, default=8, help='for gumbel softmax search gradient max value')
+    parser.add_argument('--tau_min', type=float, default=4, help='for gumbel softmax search gradient min value')
+    parser.add_argument("--repeat", type=int, default=10)
+    parser.add_argument("--num_final", type=int, default=60)
 
 
     return parser.parse_args(args)
