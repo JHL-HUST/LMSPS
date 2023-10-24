@@ -19,7 +19,7 @@ from tqdm import tqdm
 
 sys.path.append('../data')
 from data_loader import data_loader
-from attacks import *
+# from attacks import *
 import src.utils_lib
 
 import warnings
