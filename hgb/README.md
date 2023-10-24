@@ -1,4 +1,4 @@
-# LDMLP on HGB datasets
+# LMSPS on HGB datasets
 
 ## Search stage
 

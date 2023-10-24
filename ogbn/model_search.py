@@ -126,7 +126,10 @@ class LHMLP_Se(nn.Module):
         ws = get_gumbel_prob(torch.stack(ws))
 
 
+<<<<<<< HEAD
 
+=======
+>>>>>>> c50912ad06c4a232ec40e52336f71357ed08d8b3
         x = torch.einsum('bcd,c->bd', x, ws)
 
         if self.residual:

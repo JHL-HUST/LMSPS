@@ -1,6 +1,6 @@
-# LDMLP
+# LMSPS
 
-This repository contains a PyTorch implementation of the preprint paper:  [Long-range Dependency based Multi-Layer Perceptron for Heterogeneous Information Networks](https://arxiv.org/abs/2307.08430v1)
+This repository contains a PyTorch implementation of the preprint paper:  [Long-range Meta-path Search through Progressive Sampling on Large-scale Heterogeneous Information Networks](https://arxiv.org/abs/2307.08430v1)
 
 ## Requirements
 
@@ -26,7 +26,7 @@ cd ..
 
 ## Data preparation
 
-For HGB datasets, you can download from [the source of HGB benchmark](https://cloud.tsinghua.edu.cn/d/fc10cb35d19047a88cb1/?p=NC), and extract content from these compresesed files under the folder `'./data/'`.
+For HGB datasets, you can download from [the source of HGB benchmark](https://github.com/THUDM/HGB), and extract content from these compresesed files under the folder `'./data/'`.
 
 For experiments on the large dataset ogbn-mag, the dataset will be automatically downloaded from OGB challenge.
 
