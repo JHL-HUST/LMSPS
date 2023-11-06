@@ -19,11 +19,6 @@ from tqdm import tqdm
 
 sys.path.append('../data')
 from data_loader import data_loader
-<<<<<<< HEAD
-# from attacks import *
-=======
-from attacks import *
->>>>>>> c50912ad06c4a232ec40e52336f71357ed08d8b3
 import src.utils_lib
 
 import warnings

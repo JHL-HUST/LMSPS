@@ -529,10 +529,6 @@ def parse_args(args=None):
     parser.add_argument("--num_final", type=int, default=60)
     parser.add_argument("--ACM_keep_F", action='store_true', default=False,
                         help="whether to use Field type")
-<<<<<<< HEAD
-=======
-
->>>>>>> c50912ad06c4a232ec40e52336f71357ed08d8b3
     return parser.parse_args(args)
 
 if __name__ == '__main__':

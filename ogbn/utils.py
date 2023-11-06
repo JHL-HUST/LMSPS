@@ -23,11 +23,7 @@ def project_op(keys, label_keys, model, criterion, eval_loader, device, trainval
     best_id = 0
     for opid in range(repeat):
         print (opid)
-<<<<<<< HEAD
         index_sampled = model.epoch_sample(0, keys)
-=======
-        index_sampled = model.epoch_sample(0)
->>>>>>> c50912ad06c4a232ec40e52336f71357ed08d8b3
         crit = infer_eval(model, criterion, eval_loader, device, index_sampled, trainval_point, valtest_point, valid_node_nums, labels)  #weights=weights
         print("loss {}\n".format(crit))
         if crit_extrema is None or compare(crit, crit_extrema):
