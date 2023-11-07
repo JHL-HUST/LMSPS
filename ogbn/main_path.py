@@ -445,7 +445,7 @@ def parse_args(args=None):
     parser.add_argument("--gpu", type=int, default=0)
     parser.add_argument("--cpu", action='store_true', default=False)
     parser.add_argument("--root", type=str, default='../data/')
-    parser.add_argument("--stages", nargs='+',type=int, default=[300, 300],
+    parser.add_argument("--stages", nargs='+',type=int, default=[200, 200, 200, 200, 200, 200],
                         help="The epoch setting for each stage.")
     ## For pre-processing
     parser.add_argument("--emb_path", type=str, default='../data/')
@@ -453,11 +453,11 @@ def parse_args(args=None):
                         help="the name of extra embeddings")
     parser.add_argument("--embed-size", type=int, default=256,
                         help="inital embedding size of nodes with no attributes")
-    parser.add_argument("--num-hops", type=int, default=2,
+    parser.add_argument("--num-hops", type=int, default=6,
                         help="number of hops for propagation of raw labels")
     parser.add_argument("--label-feats", action='store_true', default=False,
                         help="whether to use the label propagated features")
-    parser.add_argument("--num-label-hops", type=int, default=2,
+    parser.add_argument("--num-label-hops", type=int, default=4,
                         help="number of hops for propagation of raw features")
     ## For network structure
     parser.add_argument("--hidden", type=int, default=512)
@@ -465,7 +465,7 @@ def parse_args(args=None):
                         help="dropout on activation")
     parser.add_argument("--n-layers-2", type=int, default=2,
                         help="number of layers of the downstream task")
-    parser.add_argument("--n-layers-3", type=int, default=4,
+    parser.add_argument("--n-layers-3", type=int, default=2,
                         help="number of layers of residual label connection")
     parser.add_argument("--input-drop", type=float, default=0.1,
                         help="input dropout of input features")
@@ -482,16 +482,16 @@ def parse_args(args=None):
     ## for training
     parser.add_argument("--amp", action='store_true', default=False,
                         help="whether to amp to accelerate training with float16(half) calculation")
-    parser.add_argument("--lr", type=float, default=0.001)
+    parser.add_argument("--lr", type=float, default=3e-3)
     parser.add_argument("--weight-decay", type=float, default=0)
     parser.add_argument("--eval-every", type=int, default=1)
     parser.add_argument("--batch-size", type=int, default=10000)
     parser.add_argument("--patience", type=int, default=100,  # original 100
                         help="early stop of times of the experiment")
-    parser.add_argument("--threshold", type=float, default=0.75,
+    parser.add_argument("--threshold", type=float, default=0.6,
                         help="the threshold of multi-stage learning, confident nodes "
                            + "whose score above this threshold would be added into the training set")
-    parser.add_argument("--gama", type=float, default=0.5,
+    parser.add_argument("--gama", type=float, default=5,
                         help="parameter for the KL loss")
     parser.add_argument("--start-stage", type=int, default=0)
     parser.add_argument("--reload", type=str, default='')

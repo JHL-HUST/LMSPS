@@ -381,8 +381,8 @@ def parse_args(args=None):
     parser.add_argument("--gpu", type=int, default=0)
     parser.add_argument("--cpu", action='store_true', default=False)
     parser.add_argument("--root", type=str, default="../data/")
-    parser.add_argument("--stage", type=int, default=100, help="The epoch setting for each stage.")  # default 200
-    parser.add_argument("--embed-size", type=int, default=256,
+    parser.add_argument("--stage", type=int, default=200, help="The epoch setting for each stage.")  # default 200
+    parser.add_argument("--embed-size", type=int, default=512,
                         help="inital embedding size of nodes with no attributes")
     parser.add_argument("--num-hops", type=int, default=2,
                         help="number of hops for propagation of raw labels")

@@ -476,13 +476,13 @@ def main(args):
 def parse_args(args=None):
     parser = argparse.ArgumentParser(description='SeHGNN')
     ## For environment costruction
-    parser.add_argument("--seeds", nargs='+', type=int, default=[1],
+    parser.add_argument("--seeds", nargs='+', type=int, default=[0],
                         help="the seed used in the training")
     parser.add_argument("--dataset", type=str, default="ogbn-mag")
     parser.add_argument("--gpu", type=int, default=0)
     parser.add_argument("--cpu", action='store_true', default=False)
     parser.add_argument("--root", type=str, default="../data/")
-    parser.add_argument("--stage", type=int, default=100, help="The epoch setting for each stage.")  # default 200
+    parser.add_argument("--stage", type=int, default=200, help="The epoch setting for each stage.")  # default 200
     parser.add_argument("--num-hops", type=int, default=2,
                         help="number of hops for propagation of raw labels")
     parser.add_argument("--label-feats", action='store_true', default=False,
@@ -513,7 +513,7 @@ def parse_args(args=None):
                         help="whether to process the input features")
     ## for ablation
     parser.add_argument("--nh", type=int, default=1)
-    parser.add_argument("--ns", type=int, default=1)
+    parser.add_argument("--ns", type=int, default=30)
     parser.add_argument("--ratio", type=float, default=0)
     parser.add_argument("--dy", action='store_true', default=False)
     parser.add_argument("--no_path", nargs='+', type=str, default=[])
@@ -525,7 +525,7 @@ def parse_args(args=None):
     parser.add_argument('--tau_max', type=float, default=8, help='for gumbel softmax search gradient max value')
     parser.add_argument('--tau_min', type=float, default=4, help='for gumbel softmax search gradient min value')
     parser.add_argument("--edge_mask_ratio", type=float, default=0.0)
-    parser.add_argument("--repeat", type=int, default=10)
+    parser.add_argument("--repeat", type=int, default=200)
     parser.add_argument("--num_final", type=int, default=60)
     parser.add_argument("--ACM_keep_F", action='store_true', default=False,
                         help="whether to use Field type")

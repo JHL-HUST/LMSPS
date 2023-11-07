@@ -305,13 +305,13 @@ def main(args):
 def parse_args(args=None):
     parser = argparse.ArgumentParser(description='SeHGNN')
     ## For environment costruction
-    parser.add_argument("--seeds", nargs='+', type=int, default=[1],
+    parser.add_argument("--seeds", nargs='+', type=int, default=[42],
                         help="the seed used in the training")
     parser.add_argument("--dataset", type=str, default="ogbn-mag")
     parser.add_argument("--gpu", type=int, default=0)
     parser.add_argument("--cpu", action='store_true', default=False)
     parser.add_argument("--root", type=str, default='../data/')
-    parser.add_argument("--stages", nargs='+',type=int, default=[300, 300],
+    parser.add_argument("--stages", nargs='+',type=int, default=[200],
                         help="The epoch setting for each stage.")
     ## For pre-processing
     parser.add_argument("--emb_path", type=str, default='../data/')
@@ -319,11 +319,11 @@ def parse_args(args=None):
                         help="the name of extra embeddings")
     parser.add_argument("--embed-size", type=int, default=256,
                         help="inital embedding size of nodes with no attributes")
-    parser.add_argument("--num-hops", type=int, default=2,
+    parser.add_argument("--num-hops", type=int, default=6,
                         help="number of hops for propagation of raw labels")
     parser.add_argument("--label-feats", action='store_true', default=False,
                         help="whether to use the label propagated features")
-    parser.add_argument("--num-label-hops", type=int, default=2,
+    parser.add_argument("--num-label-hops", type=int, default=4,
                         help="number of hops for propagation of raw features")
     ## For network structure
     parser.add_argument("--hidden", type=int, default=512)
@@ -354,7 +354,7 @@ def parse_args(args=None):
                         help="parameter for the KL loss")
     parser.add_argument("--start-stage", type=int, default=0)
     parser.add_argument("--reload", type=str, default='')
-    parser.add_argument("--ns", type=int, default=1)
+    parser.add_argument("--ns", type=int, default=30)
     parser.add_argument("--ratio", type=float, default=0)
     parser.add_argument("--topn", type=int, default=0)
     parser.add_argument("--num_label", type=int, default=2)
@@ -371,7 +371,7 @@ def parse_args(args=None):
     parser.add_argument("--out_max_deg", type=int, default=None)
     parser.add_argument('--tau_max', type=float, default=8, help='for gumbel softmax search gradient max value')
     parser.add_argument('--tau_min', type=float, default=4, help='for gumbel softmax search gradient min value')
-    parser.add_argument("--repeat", type=int, default=10)
+    parser.add_argument("--repeat", type=int, default=200)
     parser.add_argument("--num_final", type=int, default=60)
 
 
