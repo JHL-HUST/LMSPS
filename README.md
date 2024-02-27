@@ -18,7 +18,11 @@ cd ..
 
 ## Data preparation
 
-For HGB datasets, you can download from [the source of HGB benchmark](https://github.com/THUDM/HGB), and extract content from these compresesed files under the folder `'./data/'`. Or you can run the script `download_hgb_datasets.sh`.
+For HGB datasets:
+
+```
+sh download_hgb_datasets.sh
+```
 
 For experiments on the large dataset ogbn-mag, the dataset will be automatically downloaded from OGB challenge.
 
