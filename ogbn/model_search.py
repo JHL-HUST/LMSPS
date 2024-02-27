@@ -4,13 +4,13 @@ import torch.nn.functional as F
 import random
 
 
-class LHMLP_Se(nn.Module):
+class LMSPS_Se(nn.Module):
     def __init__(self, dataset, data_size, hidden, nclass,
                  num_feats, feat_keys, num_label_feats, label_feat_keys, tgt_key,
                  dropout, input_drop, label_drop, device, num_final, residual=False,
                  label_residual=True, num_sampled=0, num_label=0):
         
-        super(LHMLP_Se, self).__init__()
+        super(LMSPS_Se, self).__init__()
 
         self.num_sampled = num_sampled
         # self.label_sampled = num_label if num_label_feats else 0

@@ -5,11 +5,11 @@ from torch_sparse import SparseTensor
 
 import random
 
-class LHMLP_Se(nn.Module):
+class LMSPS_Se(nn.Module):
     def __init__(self, hidden, nclass, feat_keys, label_feat_keys, tgt_key, dropout, 
                  input_drop, device, num_final, residual=False, bns=False, data_size=None, num_sampled=1):
         
-        super(LHMLP_Se, self).__init__()
+        super(LMSPS_Se, self).__init__()
 
         self.feat_keys = feat_keys
         self.label_feat_keys = label_feat_keys

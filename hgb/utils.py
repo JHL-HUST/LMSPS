@@ -19,7 +19,7 @@ from tqdm import tqdm
 
 sys.path.append('../data')
 from data_loader import data_loader
-import src.utils_lib
+# import src.utils_lib
 
 import warnings
 warnings.filterwarnings("ignore", message="Setting attributes on ParameterList is not supported.")
@@ -63,7 +63,7 @@ def infer_eval(model, criterion, eval_loader, device, index_sampled, trainval_po
     with torch.no_grad():
 
         for batch, batch_feats, batch_labels_feats, batch_mask in eval_loader:
-            batch = batch.to(device)
+            # # batch = batch.to(device)
             batch_feats = {k: x.to(device) for k, x in batch_feats.items() if
                            k in meta_path_sampled or (model.residual and k == model.tgt_key)}
             batch_labels_feats = {k: x.to(device) for k, x in batch_labels_feats.items() if k in label_meta_path_sampled}
@@ -377,7 +377,7 @@ def train(model, feats, label_feats, labels_cuda, loss_fcn, optimizer, train_loa
     y_true, y_pred = [], []
 
     for batch in train_loader:
-        batch = batch.to(device)
+        ## batch = batch.to(device)
         if isinstance(feats, list):
             batch_feats = [x[batch].to(device) for x in feats]
         elif isinstance(feats, dict):
@@ -429,7 +429,7 @@ def train_search(model, feats, label_feats, labels_cuda, loss_fcn, optimizer_w, 
     val_y_true, val_y_pred = [], []
     ###################  optimize w  ##################
     for batch in train_loader:
-        batch = batch.to(device)
+        # batch = batch.to(device)
         val_batch = next(iter(val_loader)).to(device)
         if isinstance(feats, list):
             batch_feats = [x[batch].to(device) for x in feats]
@@ -514,12 +514,14 @@ def train_search_new(model, feats, label_feats, labels_cuda, loss_fcn, optimizer
     val_y_true, val_y_pred = [], []
     ###################  optimize w  ##################
     for batch in train_loader:
-        batch = batch.to(device)
-        val_batch = next(iter(val_loader)).to(device)
+        # batch = batch.to(device)
+        val_batch = next(iter(val_loader))
         if isinstance(feats, list):
             batch_feats = [x[batch].to(device) for x in feats]
             val_batch_feats = [x[val_batch].to(device) for x in feats]
         elif isinstance(feats, dict):
+            # import code
+            # code.interact(local=locals())
             batch_feats = {k: x[batch].to(device) for k, x in feats.items()}
             val_batch_feats = {k: x[val_batch].to(device) for k, x in feats.items()}
         else:
@@ -602,7 +604,7 @@ def train_search_two(model, feats, label_feats, labels_cuda, loss_fcn, optimizer
     val_y_true, val_y_pred = [], []
     ###################  optimize w  ##################
     for batch in train_loader:
-        batch = batch.to(device)
+        # batch = batch.to(device)
         val_batch = next(iter(val_loader))
         if isinstance(feats, list):
             batch_feats = [x[batch].to(device) for x in feats]
@@ -689,7 +691,7 @@ def train_flag(model, feats, label_feats, labels_cuda, loss_fcn, optimizer, trai
     y_true, y_pred = [], []
 
     for batch in train_loader:
-        batch = batch.to(device)
+        # batch = batch.to(device)
         if isinstance(feats, list):
             batch_feats = [x[batch].to(device) for x in feats]
         elif isinstance(feats, dict):
@@ -744,7 +746,7 @@ def train_2l(model, feats, label_feats, labels_cuda, loss_fcn, optimizer, train_
     y_true, y_pred = [], []
 
     for batch in train_loader:
-        batch = batch.to(device)
+        # batch = batch.to(device)
 
         layer2_feats = {k: x[batch] for k, x in feats.items() if k[0] == tgt_type}
         batch_labels_feats = {k: x[batch] for k, x in label_feats.items()}

@@ -47,8 +47,10 @@ class Conv1d1x1(nn.Module):
                 assert False
         else:
             if self.cformat == 'channel-first':
-
                 # print(x.shape, self.W.shape)
+                # import code
+                # code.interact(local=locals())
+
                 return torch.einsum('bcm,cmn->bcn', x, self.W) + self.bias
             elif self.cformat == 'channel-last':
                 return torch.einsum('bmc,cmn->bnc', x, self.W) + self.bias.T
@@ -86,7 +88,8 @@ class LDMLP(nn.Module):
                         torch.Tensor(nclass, nfeat).uniform_(-0.5, 0.5))
         else:
             self.labels_embeding = {}
-        
+        # import code
+        # code.interact(local=locals())
 
         self.layers = nn.Sequential(
             Conv1d1x1(nfeat, hidden, num_channels, bias=True, cformat='channel-first'),

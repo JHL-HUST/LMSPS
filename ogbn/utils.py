@@ -10,6 +10,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+import pdb
 from tqdm import tqdm
 from torch_sparse import SparseTensor
 from ogb.nodeproppred import DglNodePropPredDataset, Evaluator
@@ -265,7 +266,7 @@ def propagate_self_value(g,target_node = 'P',max_hop = 1):
     in_links = defaultdict(list)
     for etype in g.etypes:
         sparse_coo = g.adj(etype=etype).coalesce()
-        sparse_csr = sp.csr_matrix((sparse_coo.values(),sparse_coo.indices()),shape = sparse_coo.shape)
+        sparse_csr = sp.csr_matrix((sparse_coo.val,sparse_coo.indices()),shape = sparse_coo.shape)
         sparse_csr = sp_normalize(sparse_csr)
         my_adjs[etype] = sparse_csr
         in_links[etype[0]].append(etype)
@@ -311,7 +312,7 @@ def propagate_self_value_parallel(g,target_node = 'P',max_hop = 1,parallel_num =
     in_links = defaultdict(list)
     for etype in g.etypes:
         sparse_coo = g.adj(etype=etype).coalesce()
-        sparse_csr = sp.csr_matrix((sparse_coo.values(),sparse_coo.indices()),shape = sparse_coo.shape)
+        sparse_csr = sp.csr_matrix((sparse_coo.val,sparse_coo.indices()),shape = sparse_coo.shape)
         sparse_csr = sp_normalize(sparse_csr)
         my_adjs[etype] = sparse_csr
         in_links[etype[0]].append(etype)
@@ -374,7 +375,8 @@ def propagate_self_value_gpu_parallel(g,target_node = 'P',max_hop = 1,parallel_n
     in_links = defaultdict(list)
     for etype in g.etypes:
         sparse_coo = g.adj(etype=etype).coalesce()
-        sparse_csr = sp.csr_matrix((sparse_coo.values(),sparse_coo.indices()),shape = sparse_coo.shape)
+        # pdb.set_trace()
+        sparse_csr = sp.csr_matrix((sparse_coo.val,sparse_coo.indices()),shape = sparse_coo.shape) #sparse_coo.values(),
         sparse_csr = sp_normalize(sparse_csr)
         sparse_coo = torch.sparse_coo_tensor(torch.LongTensor(sparse_csr.nonzero()), torch.FloatTensor(sparse_csr.data),
                     size=sparse_csr.shape,device=device)
@@ -664,8 +666,10 @@ def train_search(model, train_loader, loss_fcn, optimizer_w, optimizer_a, val_lo
     val_y_true, val_y_pred = [], []
     ###################  optimize w  ##################
     for batch in train_loader:
-        val_batch = next(iter(val_loader)).to(device)
+        val_batch = next(iter(val_loader))   #.to(device)
         batch_feats = {k: x[batch].to(device) for k, x in feats.items()}
+        # import code
+        # code.interact(local=locals())
         val_batch_feats = {k: x[val_batch].to(device) for k, x in feats.items()}
         batch_labels_feats = {k: x[batch].to(device) for k, x in label_feats.items()}
         val_batch_labels_feats = {k: x[val_batch].to(device) for k, x in label_feats.items()}

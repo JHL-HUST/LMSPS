@@ -4,7 +4,7 @@ import argparse
 import datetime
 import numpy as np
 from tqdm import tqdm
-
+import os
 import torch
 import torch.nn.functional as F
 from torch_sparse import remove_diag
@@ -64,6 +64,10 @@ def main(args):
     elif args.dataset == 'IMDB':
         tgt_type = 'M'
         node_types = ['M', 'A', 'D', 'K']
+        extra_metapath = []
+    elif args.dataset == 'Freebase':
+        tgt_type = '0'
+        node_types = [str(i) for i in range(8)]
         extra_metapath = []
     else:
         assert 0
@@ -219,7 +223,7 @@ def main(args):
         # =======
         torch.cuda.empty_cache()
         gc.collect()
-        model = LDMLP(args.embed_size, args.hidden, num_classes, feats.keys(), label_feats.keys(), tgt_type,
+        model = LMSPS(args.embed_size, args.hidden, num_classes, feats.keys(), label_feats.keys(), tgt_type,
             args.dropout, args.input_drop, args.att_drop, args.label_drop,
             args.n_layers_2,  args.residual, bns=args.bns, data_size=data_size, path=archs[args.arch][0],
             label_path=archs[args.arch][1], eps=args.eps, device=device)
@@ -342,7 +346,7 @@ def main(args):
                 raw_preds = torch.cat(raw_preds, dim=0)
             best_pred = torch.cat((best_pred, raw_preds), dim=0)
 
-        torch.save(best_pred, f'{checkpt_file}.pt')
+        #torch.save(best_pred, f'{checkpt_file}.pt')
 
         if args.dataset != 'IMDB':
             predict_prob = best_pred.softmax(dim=1)
@@ -369,11 +373,13 @@ def main(args):
         + f'val_acc ({val_acc[0]*100:.2f}, {val_acc[1]*100:.2f}) ' \
         + f'test_acc ({test_acc[0]*100:.2f}, {test_acc[1]*100:.2f})')
     print(checkpt_file.split('/')[-1])
+    
+    os.remove(f'{checkpt_file}.pkl')
 
     return [test_acc[0]*100, test_acc[1]*100]
 
 def parse_args(args=None):
-    parser = argparse.ArgumentParser(description='LDMLP')
+    parser = argparse.ArgumentParser(description='LMSPS')
     ## For environment costruction
     parser.add_argument("--seeds", nargs='+', type=int, default=[1],
                         help="the seed used in the training")
@@ -381,7 +387,7 @@ def parse_args(args=None):
     parser.add_argument("--gpu", type=int, default=0)
     parser.add_argument("--cpu", action='store_true', default=False)
     parser.add_argument("--root", type=str, default="../data/")
-    parser.add_argument("--stage", type=int, default=200, help="The epoch setting for each stage.")  # default 200
+    parser.add_argument("--stage", type=int, default=200, help="The epoch setting for each stage.")
     parser.add_argument("--embed-size", type=int, default=512,
                         help="inital embedding size of nodes with no attributes")
     parser.add_argument("--num-hops", type=int, default=2,
@@ -392,7 +398,7 @@ def parse_args(args=None):
                         help="number of hops for propagation of raw features")
     ## For network structure
     parser.add_argument("--hidden", type=int, default=512)
-    parser.add_argument("--dropout", type=float, default=0.5,
+    parser.add_argument("--dropout", type=float, default=0.45,
                         help="dropout on activation")
     parser.add_argument("--n-layers-2", type=int, default=3,
                         help="number of layers of the downstream task")
@@ -413,7 +419,7 @@ def parse_args(args=None):
     parser.add_argument("--weight-decay", type=float, default=0)
     parser.add_argument("--eval-every", type=int, default=1)
     parser.add_argument("--batch-size", type=int, default=10000)
-    parser.add_argument("--patience", type=int, default=100,
+    parser.add_argument("--patience", type=int, default=50,
                         help="early stop of times of the experiment")
     parser.add_argument("--edge_mask_ratio", type=float, default=0)
     parser.add_argument('--arch', type=str, default='DBLP')
@@ -439,11 +445,18 @@ if __name__ == '__main__':
         result = main(args)
         results.append(result)
     print('results', results)
+    
 
-    results.sort(key=lambda x: x[0], reverse=True)
-    print(results)
-    results = results[:5]
-    mima = list(map(list, zip(*results)))
-    print(f'micro: {mima[0]}', f'macro: {mima[1]}')
-    print(f'micro_mean: {np.mean(mima[0]):.2f}', f'micro_std: {np.std(mima[0]):.2f}')
-    print(f'macro_mean: {np.mean(mima[1]):.2f}', f'macro_std: {np.std(mima[1]):.2f}')
+    if args.dataset == 'IMDB':
+        results.sort(key=lambda x: x[0], reverse=True)
+        print(results)
+        results = results[:5]
+        mima = list(map(list, zip(*results)))
+        #print(f'micro: {mima[0]}', f'macro: {mima[1]}')
+        print(f'micro_mean: {np.mean(mima[0]):.2f}', f'micro_std: {np.std(mima[0]):.2f}')
+        print(f'macro_mean: {np.mean(mima[1]):.2f}', f'macro_std: {np.std(mima[1]):.2f}')
+    else:
+        aver = list(map(list, zip(*results)))
+        print(f'micro_aver: {np.mean(aver[0]):.2f}', f'micro_std: {np.std(aver[0]):.2f}')
+        print(f'macro_aver: {np.mean(aver[1]):.2f}', f'macro_std: {np.std(aver[1]):.2f}')
+

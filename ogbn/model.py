@@ -53,14 +53,14 @@ class Conv1d1x1(nn.Module):
                 assert False
 
 
-class LDMLP(nn.Module):
+class LMSPS(nn.Module):
     def __init__(self, dataset, data_size, nfeat, hidden, nclass,
                  num_feats, num_label_feats, tgt_key,
                  dropout, input_drop, att_drop, label_drop,
                   n_layers_2, n_layers_3,
                  residual=False, bns=False, label_bns=False,
                  label_residual=True, path=[], label_path=[], eps = 0, device = None):
-        super(LDMLP, self).__init__()
+        super(LMSPS, self).__init__()
         self.dataset = dataset
         self.residual = residual
         self.tgt_key = tgt_key
@@ -182,6 +182,7 @@ class LDMLP(nn.Module):
                 if k in self.embedings:
                     feats_dict[k] = v @ self.embedings[k]
 
+
         tgt_feat = self.input_drop(feats_dict[self.tgt_key])
         B = num_node = tgt_feat.size(0)
 
@@ -212,13 +213,13 @@ class LDMLP(nn.Module):
         return x
 
 
-class LDMLP_Se(nn.Module):
+class LMSPS_Se(nn.Module):
     def __init__(self, dataset, data_size, hidden, nclass,
                  num_feats, num_label_feats, label_feat_keys, tgt_key,
                  dropout, input_drop, label_drop, device, residual=False, 
                  label_residual=True, num_sampled=0):
         
-        super(LDMLP_Se, self).__init__()
+        super(LMSPS_Se, self).__init__()
 
         self.num_sampled = num_sampled
         # self.label_sampled = num_label if num_label_feats else 0

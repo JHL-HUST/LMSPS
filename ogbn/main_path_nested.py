@@ -8,7 +8,8 @@ import numpy as np
 
 import torch
 import torch.nn.functional as F
-
+from util.torch_data_utils import NestedDataLoader
+from util.nested_data_utils import nested_gather, nested_map
 from model import *
 from utils import *
 from arch import archs
@@ -30,6 +31,10 @@ def main(args):
         print(self_value_dict)
     else:
         self_value_dict = None
+    
+    import code
+    code.interact(local=locals())
+    
         
     # =======
     # rearange node idx (for feats & labels)
@@ -114,14 +119,34 @@ def main(args):
 
     feats = {k: v[init2sort] for k, v in feats.items()}
     
-    # import code
-    # code.interact(local=locals())
+    import code
+    code.interact(local=locals())
 
     feats = {k: v for k, v in feats.items() if k in archs[args.arch][0] or k == tgt_type}
 
     prop_toc = datetime.datetime.now()
     print(f'Time used for feat prop {prop_toc - prop_tic}')
     gc.collect()
+    
+    #######################################
+    train_h_list_list, train_y = nested_gather([target_h_list_list, init_labels], train_nid)
+    valid_h_list_list, valid_y = nested_gather([target_h_list_list, init_labels], val_nid)
+    test_h_list_list, test_y = nested_gather([target_h_list_list, init_labels], test_nid)
+
+
+    train_data_loader = NestedDataLoader(
+        [train_h_list_list, train_y],
+        batch_size=batch_size, shuffle=True, device=data_loader_device
+    )
+
+    valid_data_loader =NestedDataLoader(
+        [valid_h_list_list, valid_y], 
+        batch_size=batch_size, shuffle=False, device=data_loader_device
+    )
+    test_data_loader = NestedDataLoader(
+        [test_h_list_list, test_y], 
+        batch_size=batch_size, shuffle=False, device=data_loader_device
+    )
 
 
     all_loader = torch.utils.data.DataLoader(
@@ -489,7 +514,7 @@ def parse_args(args=None):
     parser.add_argument("--weight-decay", type=float, default=0)
     parser.add_argument("--eval-every", type=int, default=1)
     parser.add_argument("--batch-size", type=int, default=10000)
-    parser.add_argument("--patience", type=int, default=50,  # original 100
+    parser.add_argument("--patience", type=int, default=100,  # original 100
                         help="early stop of times of the experiment")
     parser.add_argument("--threshold", type=float, default=0.6,
                         help="the threshold of multi-stage learning, confident nodes "
