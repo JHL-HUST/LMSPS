@@ -474,7 +474,7 @@ def main(args):
 
 
 def parse_args(args=None):
-    parser = argparse.ArgumentParser(description='SeHGNN')
+    parser = argparse.ArgumentParser(description='LMSPS')
     ## For environment costruction
     parser.add_argument("--seeds", nargs='+', type=int, default=[0],
                         help="the seed used in the training")
