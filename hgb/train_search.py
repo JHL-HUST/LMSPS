@@ -386,7 +386,7 @@ def main(args):
 
         print(data_size.keys(), feats.keys(), label_feats.keys())
 
-        model = LHMLP_Se(args.hidden, num_classes, feats.keys(), label_feats.keys(), tgt_type,
+        model = LMSPS_Se(args.hidden, num_classes, feats.keys(), label_feats.keys(), tgt_type,
             args.dropout, args.input_drop, device, args.num_final, args.residual, bns=args.bns, data_size=data_size, num_sampled=args.ns)
 
         print(model)

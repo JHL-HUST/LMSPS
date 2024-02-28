@@ -58,11 +58,11 @@ class Conv1d1x1(nn.Module):
                 assert False
 
 
-class LDMLP(nn.Module):
+class LMSPS(nn.Module):
     def __init__(self, nfeat, hidden, nclass, feat_keys, label_feat_keys, tgt_type,
                  dropout, input_drop, att_dropout, label_drop, n_layers_2, residual=False, 
                  bns=False, data_size=None, path=[], label_path=[], eps=0, device=None):
-        super(LDMLP, self).__init__()
+        super(LMSPS, self).__init__()
 
         self.feat_keys = sorted(feat_keys)
         self.label_feat_keys = sorted(label_feat_keys)
@@ -187,11 +187,11 @@ class LDMLP(nn.Module):
 
         return out
 
-class LDMLP_Se(nn.Module):
+class LMSPS_Se(nn.Module):
     def __init__(self, hidden, nclass, feat_keys, label_feat_keys, tgt_key, dropout, 
                  input_drop, device, residual=False, bns=False, data_size=None, num_sampled=1):
         
-        super(LDMLP_Se, self).__init__()
+        super(LMSPS_Se, self).__init__()
 
         self.feat_keys = feat_keys
         self.label_feat_keys = label_feat_keys

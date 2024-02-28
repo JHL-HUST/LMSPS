@@ -250,7 +250,7 @@ def main(args):
         # =======
         # Construct network
         # =======
-        model = LHMLP_Se(args.dataset,
+        model = LMSPS_Se(args.dataset,
             data_size, args.hidden, n_classes,
             len(feats), feats.keys(), len(label_feats), label_feats.keys(),
             tgt_type, dropout=args.dropout,

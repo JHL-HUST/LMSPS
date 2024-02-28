@@ -344,7 +344,7 @@ def main(args):
         # =======
         # Construct network
         # =======
-        model = LDMLP(args.dataset,
+        model = LMSPS(args.dataset,
             data_size, args.embed_size,
             args.hidden, n_classes,
             len(feats), len(label_feats), tgt_type,
@@ -440,7 +440,7 @@ def main(args):
 
 
 def parse_args(args=None):
-    parser = argparse.ArgumentParser(description='LDMLP')
+    parser = argparse.ArgumentParser(description='LMSPS')
     ## For environment costruction
     parser.add_argument("--seeds", nargs='+', type=int, default=[1],
                         help="the seed used in the training")

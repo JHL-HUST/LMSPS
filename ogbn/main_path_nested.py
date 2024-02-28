@@ -369,7 +369,7 @@ def main(args):
         # =======
         # Construct network
         # =======
-        model = LDMLP(args.dataset,
+        model = LMSPS(args.dataset,
             data_size, args.embed_size,
             args.hidden, n_classes,
             len(feats), len(label_feats), tgt_type,
