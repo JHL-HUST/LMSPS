@@ -1,13 +1,21 @@
-# LMSPS: Long-range Meta-path Search on Large-scale Heterogeneous Graphs🚀
+# Long-range Meta-path Search on Large-scale Heterogeneous Graphs (LMSPS) 🚀
 <div align="center">
 
-[![arXiv](https://img.shields.io/badge/arXiv%20paper-2404.02905-b31b1b.svg)](https://arxiv.org/pdf/2307.08430)&nbsp
+[![arXiv](https://img.shields.io/badge/arXiv%20paper-2404.02905-b31b1b.svg)](https://arxiv.org/pdf/2307.08430)
+
 
 <div>
   <p align="center" style="font-size: larger;">
     <strong>NeurIPS 2024 Accepted</strong>
   </p>
 </div>
+
+<br>
+
+## News
+
+* **2024-09:** VAR is accepted by **NeurIPS 2024**.
+* **2024-02:** [Rank 1](https://ogb.stanford.edu/docs/leader_nodeprop/#ogbn-mag) on OGBN-MAG Leaderboard.
 
 ## Requirements
 
