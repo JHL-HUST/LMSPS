@@ -2,7 +2,7 @@
 <div align="center">
 
 [![arXiv](https://img.shields.io/badge/arXiv%20paper-2404.02905-b31b1b.svg)](https://arxiv.org/pdf/2307.08430)
-
+</div>
 
 <div>
   <p align="center" style="font-size: larger;">
@@ -14,7 +14,7 @@
 
 ## News
 
-* **2024-09:** VAR is accepted by **NeurIPS 2024**.
+* **2024-09:** LMSPS is accepted by **NeurIPS 2024**.
 * **2024-02:** [Rank 1](https://ogb.stanford.edu/docs/leader_nodeprop/#ogbn-mag) on OGBN-MAG Leaderboard.
 
 ## Requirements
