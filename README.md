@@ -1,6 +1,13 @@
-# LMSPS
+# LMSPS: Long-range Meta-path Search on Large-scale Heterogeneous Graphs🚀
+<div align="center">
 
-This repository contains a PyTorch implementation of the preprint paper:  [Long-range Meta-path Search on Large-scale Heterogeneous Graphs](https://arxiv.org/pdf/2307.08430.pdf).
+[![arXiv](https://img.shields.io/badge/arXiv%20paper-2404.02905-b31b1b.svg)](https://arxiv.org/pdf/2307.08430)&nbsp
+
+<div>
+  <p align="center" style="font-size: larger;">
+    <strong>NeurIPS 2024 Accepted</strong>
+  </p>
+</div>
 
 ## Requirements
 
